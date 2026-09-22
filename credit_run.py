@@ -1,5 +1,7 @@
-"""
-运动世界校园 - 室外计分跑
+"""Legacy standalone runner.
+
+Deprecated: use ``run_cli.py`` and ``sport_client.py`` instead.  This file is
+kept only for backwards compatibility and is not part of the maintained path.
 """
 
 import argparse
@@ -17,11 +19,14 @@ import sys
 import time
 import uuid
 from typing import Dict, Optional, Tuple, Union, Any, Callable, List
+from coordinate_utils import Coordinate, validate_coordinate
 
 import requests
 from Crypto.Cipher import AES, PKCS1_v1_5
 from Crypto.PublicKey import RSA
 from Crypto.Util.Padding import pad, unpad
+from running_protocol import validate_outdoor_record_consistency
+from security_utils import redact_data
 
 
 
@@ -44,6 +49,10 @@ RESPONSE_VERIFY_PUBKEY_SPKI_B64 = (
 DEFAULT_HOST_RUN = "https://run.gxapp.iydsj.com"
 DEFAULT_HOST_DISCOVERY = "https://discovery.gxapp.iydsj.com"
 DEFAULT_HOST_DATAPOINT = "https://datapoint.gxapp.iydsj.com"
+
+
+def legacy_validate_coordinate(latitude: float, longitude: float) -> Coordinate:
+    return validate_coordinate(latitude, longitude)
 
 
 def compute_token_sign(params: Dict[str, Union[str, int, float, None]],
@@ -1112,6 +1121,7 @@ class SportClient:
                                   base_lon: Optional[float] = None) -> List[GpsPoint]:
         if base_lat is None or base_lon is None:
             base_lat, base_lon = self.get_campus_center_geo()
+        base_lat, base_lon = validate_coordinate(base_lat, base_lon)
 
         lat_scale = 1.0 / 111000.0
         lon_scale = 1.0 / (111000.0 * math.cos(math.radians(base_lat)))
@@ -1129,8 +1139,13 @@ class SportClient:
             jitter_lat = random.uniform(-0.25, 0.25) * lat_scale
             jitter_lon = random.uniform(-0.25, 0.25) * lon_scale
 
-            lat = base_lat + radius_lat * math.sin(angle) + jitter_lat
-            lon = base_lon + radius_lon * math.cos(angle) + jitter_lon
+            if i == 0:
+                # Keep the first track point exactly equal to the configured
+                # anchor. Record-level coordinates are derived from this point.
+                lat, lon = base_lat, base_lon
+            else:
+                lat = base_lat + radius_lat * math.sin(angle) + jitter_lat
+                lon = base_lon + radius_lon * math.cos(angle) + jitter_lon
             speed = round((dist_per_step / 2.0), 2)
             current_dist += dist_per_step
 
@@ -1166,6 +1181,7 @@ class SportClient:
             base_lat=base_lat,
             base_lon=base_lon
         )
+        anchor_lat, anchor_lon = validate_coordinate(gps_pts[0].lat, gps_pts[0].lon)
 
         speed_val = round((total_distance_m / total_time_sec) * 1000) if total_time_sec > 0 else 0
         avg_step_freq = round(total_steps * 60.0 / total_time_sec) if total_time_sec > 0 else 0
@@ -1219,6 +1235,18 @@ class SportClient:
             step_buckets.append({"step": steps_per_bucket, "startTime": b_start, "stopTime": b_end, "queueNum": i + 1})
 
         all_loc_json = json.dumps([p.to_dict() for p in gps_pts], separators=(",", ":"))
+        five_points = []
+        for index in range(5):
+            point = gps_pts[min(len(gps_pts) - 1, int(index * len(gps_pts) / 5))]
+            five_points.append({
+                "lat": point.lat,
+                "lon": point.lon,
+                "isFixed": 1,
+                "isPass": True,
+                "pointName": f"FixedPoint_{index + 1}",
+                "position": index + 1,
+            })
+        five_point_json = json.dumps(five_points, separators=(",", ":"))
         speed_json = json.dumps(speed_buckets, separators=(",", ":"))
         step_json = json.dumps(step_buckets, separators=(",", ":"))
 
@@ -1231,13 +1259,13 @@ class SportClient:
             "complete": True,
             "errorCode": 0,
             "faceCheck": 0,
-            "fivePointJson": "[]",
+            "fivePointJson": five_point_json,
             "geeToken": "",
             "getPrize": False,
             "goalId": None,
             "isUpload": False,
-            "latitude": base_lat,
-            "longitude": base_lon,
+            "latitude": anchor_lat,
+            "longitude": anchor_lon,
             "maxRunTime": 7200,
             "minSteps": 2000,
             "originalSign": original_sign,
@@ -1269,6 +1297,8 @@ class SportClient:
             "validDis": int(total_distance_m),
             "validTime": total_time_sec
         }
+
+        validate_outdoor_record_consistency(save_record)
 
         save_res = self.execute_request("POST", f"{DEFAULT_HOST_RUN}/api/v70260/runnings/save/record", save_record)
         if save_res.get("error") == 10000:
@@ -1316,8 +1346,13 @@ def main():
     parser.add_argument("-d", "--distance", type=float, help="跑步距离(米)")
     parser.add_argument("--time", type=int, help="跑步用时(秒)")
     parser.add_argument("--steps", type=int, help="步数")
+    parser.add_argument("--latitude", "--lat", dest="latitude", type=float,
+                        help="跑步起点纬度；不提供时使用学校围栏中心")
+    parser.add_argument("--longitude", "--lon", dest="longitude", type=float,
+                        help="跑步起点经度；不提供时使用学校围栏中心")
     args = parser.parse_args()
 
+    print("警告: credit_run.py 已废弃，请改用 run_cli.py（支持统一坐标校验和 --dry-run）")
     print("运动世界校园 / 计分跑打卡")
     print("-" * 35)
 
@@ -1367,7 +1402,17 @@ def main():
         r = p_res["data"].get("runRuleModel", {})
         min_dist = float(r.get("minDistance", 2400) or 2400)
 
-    base_lat, base_lon = client.get_campus_center_geo()
+    if (args.latitude is None) != (args.longitude is None):
+        print("错误: 纬度和经度必须同时提供")
+        return
+    if args.latitude is None:
+        base_lat, base_lon = client.get_campus_center_geo()
+    else:
+        try:
+            base_lat, base_lon = validate_coordinate(args.latitude, args.longitude)
+        except ValueError as exc:
+            print(f"错误: {exc}")
+            return
 
     distance = args.distance or (min_dist + 100.0)
     duration = args.time or int((distance / 1000.0) * 300)
@@ -1394,7 +1439,7 @@ def main():
     if res.get("error") == 10000:
         print("状态: 成功")
         print(f"消息: {res.get('message', '打卡成功')}")
-        data = res.get("data")
+        data = redact_data(res.get("data"))
         if isinstance(data, dict):
             for k, v in data.items():
                 print(f"{k}: {v}")
@@ -1403,7 +1448,7 @@ def main():
         print(f"错误码: {res.get('error', -1)}")
         print(f"消息: {res.get('message', '未知错误')}")
         print("原始返回:")
-        print(json.dumps(res, ensure_ascii=False, indent=2))
+        print(json.dumps(redact_data(res), ensure_ascii=False, indent=2))
     print("-" * 35)
 
 

@@ -8,6 +8,7 @@ cur_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, cur_dir)
 
 from sport_client import SportClient
+from security_utils import mask_secret, redact_data
 
 
 def print_banner():
@@ -20,14 +21,14 @@ def format_login_success(data: dict):
     print()
     print("登录成功")
     print(f"姓名: {data.get('name', '未设置')}")
-    print(f"学号/工号: {data.get('campusId', '未设置')}")
+    print(f"学号/工号: {mask_secret(data.get('campusId', '未设置'))}")
     print(f"学校: {data.get('campusName', '未设置')}")
     print(f"院系: {data.get('depart', '未设置')}")
     print(f"班级: {data.get('gradeClass', '未设置')}")
-    print(f"UID: {data.get('uid', '-')}")
+    print(f"UID: {mask_secret(data.get('uid', '-'))}")
     print(f"UNID: {data.get('unid', '-')}")
     print(f"性别: {sex}")
-    print(f"Token: {data.get('token', '-')}")
+    print(f"Token: {mask_secret(data.get('token', '-'))}")
     print()
 
 
@@ -45,7 +46,7 @@ def format_login_error(res: dict):
     elif code == 18002:
         print("建议: 在手机 App 确认切换设备")
     else:
-        print("响应:", json.dumps(res, ensure_ascii=False))
+        print("响应:", json.dumps(redact_data(res), ensure_ascii=False))
     print()
 
 
