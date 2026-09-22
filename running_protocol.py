@@ -7,8 +7,14 @@ import math
 import time
 import uuid
 from typing import Dict, List, Optional, Tuple, Union
+from coordinate_utils import Coordinate, coordinates_match, validate_coordinate
 
 SPORT_STATIC_SALT = "2slhe02lsfiwowlcixisla_sls-_slaor"
+
+
+def legacy_validate_coordinate(latitude: float, longitude: float) -> Coordinate:
+    """Validate and normalize the single coordinate source used by a run."""
+    return validate_coordinate(latitude, longitude)
 
 
 def compute_sport_signature(field_map: Dict[str, Union[str, int, float, bool, None]],
@@ -149,6 +155,11 @@ class FivePoint:
 def generate_synthetic_gps_track(start_lat: float, start_lon: float,
                                  total_distance_m: int, total_time_sec: int,
                                  start_time_ms: int) -> Tuple[List[GpsPoint], List[FivePoint]]:
+    start_lat, start_lon = validate_coordinate(start_lat, start_lon)
+    if total_distance_m <= 0:
+        raise ValueError("total_distance_m must be positive")
+    if total_time_sec <= 0:
+        raise ValueError("total_time_sec must be positive")
     num_points = max(2, total_time_sec // 5)
     points = []
     radius = (total_distance_m / (2 * math.pi))
@@ -171,6 +182,50 @@ def generate_synthetic_gps_track(start_lat: float, start_lon: float,
         five_points.append(FivePoint(pt.lat, pt.lon, is_fixed=1, is_pass=True,
                                      point_name=f"FixedPoint_{i+1}", position=i+1))
     return points, five_points
+
+
+def validate_outdoor_record_consistency(record: dict,
+                                        tolerance: float = 1e-6) -> dict:
+    """Validate that record coordinates all describe the same track.
+
+    This is intentionally local and side-effect free so callers can run it in
+    dry-run mode before any network request is made.
+    """
+    if not isinstance(record, dict):
+        raise ValueError("record must be a dictionary")
+    try:
+        track = json.loads(record.get("allLocJson") or "[]")
+        fixed = json.loads(record.get("fivePointJson") or "[]")
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("record location fields must contain valid JSON") from exc
+    if not isinstance(track, list) or not track:
+        raise ValueError("allLocJson must contain at least one point")
+    if not isinstance(fixed, list) or len(fixed) != 5:
+        raise ValueError("fivePointJson must contain exactly five points")
+    if any(not isinstance(point, dict) for point in track):
+        raise ValueError("allLocJson points must be objects")
+    if any(not isinstance(point, dict) for point in fixed):
+        raise ValueError("fivePointJson points must be objects")
+
+    anchor = validate_coordinate(record.get("latitude"), record.get("longitude"))
+    first = validate_coordinate(track[0].get("lat"), track[0].get("lon"))
+    if not coordinates_match(anchor.latitude, anchor.longitude,
+                             first.latitude, first.longitude, tolerance):
+        raise ValueError("record anchor does not match the first track point")
+
+    track_coordinates = [
+        validate_coordinate(point.get("lat"), point.get("lon"))
+        for point in track
+    ]
+    for point in fixed:
+        fixed_coord = validate_coordinate(point.get("lat"), point.get("lon"))
+        if not any(coordinates_match(fixed_coord.latitude, fixed_coord.longitude,
+                                     track_point.latitude, track_point.longitude,
+                                     tolerance) for track_point in track_coordinates):
+            raise ValueError("a fixed point is not present in the full track")
+
+    return {"trackPoints": len(track), "fixedPoints": len(fixed),
+            "latitude": first.latitude, "longitude": first.longitude}
 
 
 class IndoorRunRecordBuilder:
@@ -302,6 +357,14 @@ class OutdoorRunRecordBuilder:
                      five_points: Optional[List[FivePoint]] = None,
                      calorie: int = 120, avg_power: int = 150,
                      room_id: int = 0) -> Tuple[str, dict, dict]:
+        if not gps_points:
+            raise ValueError("gps_points cannot be empty")
+
+        # The record-level location is deliberately derived from the same first
+        # point that is serialized into allLocJson.  Do not accept a second,
+        # independent coordinate source here.
+        anchor = validate_coordinate(gps_points[0].lat, gps_points[0].lon)
+        anchor_lat, anchor_lon = anchor
         complete = (total_distance_m >= self.sel_distance_m) and (total_time_sec >= self.sel_run_time_s)
         un_complete_reason = 0 if complete else 10
         avg_step_freq = round(total_steps * 60.0 / total_time_sec) if total_time_sec > 0 else 0
@@ -377,8 +440,8 @@ class OutdoorRunRecordBuilder:
             "getPrize": False,
             "goalId": None,
             "isUpload": False,
-            "latitude": gps_points[0].lat if gps_points else 0.0,
-            "longitude": gps_points[0].lon if gps_points else 0.0,
+            "latitude": anchor_lat,
+            "longitude": anchor_lon,
             "maxRunTime": 7200,
             "minSteps": 2000,
             "originalSign": original_sign,
@@ -410,6 +473,8 @@ class OutdoorRunRecordBuilder:
             "validDis": total_distance_m,
             "validTime": total_time_sec
         }
+
+        validate_outdoor_record_consistency(save_record)
 
         cos_payload = {
             "rrid": gzip_base64_encode(""),
