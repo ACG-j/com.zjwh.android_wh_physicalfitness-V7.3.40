@@ -22,7 +22,9 @@ from running_protocol import (
     OutdoorRunRecordBuilder,
     IndoorRunRecordBuilder,
     generate_synthetic_gps_track,
+    validate_outdoor_record_consistency,
 )
+from coordinate_utils import validate_coordinate
 from rank_protocol import (
     RankType,
     RankSortType,
@@ -30,8 +32,10 @@ from rank_protocol import (
     IndoorDateRange,
     LeaderboardRequestBuilder
 )
+from security_utils import install_redaction_filter
 
 logger = logging.getLogger("sport_client")
+install_redaction_filter(logger)
 
 DEFAULT_HOST_RUN = "https://run.gxapp.iydsj.com"
 DEFAULT_HOST_DISCOVERY = "https://discovery.gxapp.iydsj.com"
@@ -563,8 +567,21 @@ class SportClient:
                        total_time_sec: int = 845,          # 时长，秒
                        total_steps: int = 2487,            # 总步数
                        sport_type: int = 1,                # 运动类型
-                       start_lat: float = 00.2674,          # 起点纬度
-                       start_lon: float = 000.4821) -> dict:  # 起点经度
+                       start_lat: Optional[float] = None,    # 起点纬度
+                       start_lon: Optional[float] = None,    # 起点经度
+                       dry_run: bool = False) -> dict:
+
+        if start_lat is None or start_lon is None:
+            raise ValueError(
+                "start_lat and start_lon are required; pass the actual run anchor coordinates"
+            )
+        start_lat, start_lon = validate_coordinate(start_lat, start_lon)
+        if total_distance_m <= 0:
+            raise ValueError("total_distance_m must be positive")
+        if total_time_sec <= 0:
+            raise ValueError("total_time_sec must be positive")
+        if total_steps < 0:
+            raise ValueError("total_steps cannot be negative")
 
     # 当前时间作为结束时间
     
@@ -599,6 +616,14 @@ class SportClient:
             gps_points=gps_points,
             five_points=five_points,
         )
+        consistency = validate_outdoor_record_consistency(save_body)
+        if dry_run:
+            return {
+                "error": 10000,
+                "message": "dry-run: record generated and validated; nothing uploaded",
+                "dryRun": True,
+                "data": {"uuid": builder.uuid_str, **consistency},
+            }
         hour = time.strftime("%Y%m%d%H", time.localtime(start_time_ms / 1000))
         upload_result = self._upload_obs_payload(
             f"run_data/{hour}/{builder.uuid_str}.json",
