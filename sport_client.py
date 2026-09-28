@@ -47,7 +47,7 @@ class SportClient:
                  token: Optional[str] = None,
                  unid: int = 0,
                  device_id: Optional[str] = None,
-                 app_version: str = "7.3.40",     # App版本
+                 app_version: str = "7.3.90",     # App版本
                  os_version: str = "15",          # Android版本
                  device_name: str = "SM-A5460",    # 设备型号
                  proxy: Optional[str] = None,
