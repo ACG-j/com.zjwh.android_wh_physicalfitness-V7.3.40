@@ -847,7 +847,7 @@ class SportClient:
                  token: Optional[str] = None,
                  unid: int = 0,
                  device_id: Optional[str] = None,
-                 app_version: str = "7.3.40",
+                 app_version: str = "7.3.90",
                  os_version: str = "14",
                  device_name: Optional[str] = None,
                  proxy: Optional[str] = None,
