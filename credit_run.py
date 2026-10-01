@@ -847,7 +847,7 @@ class SportClient:
                  token: Optional[str] = None,
                  unid: int = 0,
                  device_id: Optional[str] = None,
-                 app_version: str = "7.3.40",
+                 app_version: str = "7.3.90",
                  os_version: str = "14",
                  device_name: Optional[str] = None,
                  proxy: Optional[str] = None,
@@ -864,6 +864,7 @@ class SportClient:
 
         self.session = NetSecSession()
         self.crypto = NetSecCrypto()
+        self.rank_builder = LeaderboardRequestBuilder(unid=self.unid, uid=int(self.uid) if self.uid else None)
                 
     def set_credentials(self, uid: Union[int, str], token: str, unid: Optional[int] = None):
         self.uid = str(uid)

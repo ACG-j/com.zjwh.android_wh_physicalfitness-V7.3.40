@@ -27,7 +27,7 @@ class QuietHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
-# Default GeeTest Captcha IDs for 运动世界校园 App (v7.3.40)
+# Default GeeTest Captcha IDs for 运动世界校园 App (v7.3.90)
 GEETEST_IDS = {
     "DEFAULT": "3b02ad39bd099fd3a8336d9347a189ab",
     "LOGIN": "3b02ad39bd099fd3a8336d9347a189ab",
