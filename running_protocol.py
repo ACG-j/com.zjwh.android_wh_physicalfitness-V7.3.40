@@ -4,12 +4,88 @@ import gzip
 import hashlib
 import json
 import math
+import random
 import time
 import uuid
 from typing import Dict, List, Optional, Tuple, Union
 from coordinate_utils import Coordinate, coordinates_match, validate_coordinate
 
 SPORT_STATIC_SALT = "2slhe02lsfiwowlcixisla_sls-_slaor"
+
+
+# --- Physiological / device estimates -------------------------------------
+#
+# These keep the aggregate fields the app renders (消耗/爬升高度/平均功率/配速/步幅)
+# mutually consistent with totalDis / totalTime / totalSteps, instead of being
+# hard-coded constants that never change between runs.
+
+# Fallback body weight used when the caller does not supply one.  The app asks
+# users to "完善体重信息" precisely because calorie depends on it.
+DEFAULT_BODY_WEIGHT_KG = 60.0
+
+# Net running energy cost, widely cited as ~1.036 kcal per kg per km.
+KCAL_PER_KG_KM = 1.036
+
+# Metabolic-to-mechanical efficiency while running (climb term).
+RUNNING_MECHANICAL_EFFICIENCY = 0.25
+
+# Horizontal running power coefficient (W per kg per m/s).
+RUNNING_POWER_COEFF = 1.20
+
+
+def estimate_total_ascent(total_distance_m: float,
+                          rng: Optional[random.Random] = None) -> int:
+    """Estimate cumulative elevation gain in metres.
+
+    Real outdoor runs typically climb ~3-9 m per km; a little randomness stops
+    two identical-distance runs from reporting the exact same number.  Returns
+    0 for non-positive distance.
+    """
+    if total_distance_m <= 0:
+        return 0
+    rng = rng or random
+    km = total_distance_m / 1000.0
+    per_km = rng.uniform(3.0, 9.0)
+    return int(round(km * per_km))
+
+
+def estimate_calorie(total_distance_m: float, total_time_sec: int,
+                     weight_kg: float = DEFAULT_BODY_WEIGHT_KG,
+                     total_ascent_m: int = 0) -> int:
+    """Estimate energy expenditure in 千卡 (kcal).
+
+    Distance-based running cost plus the gravitational work spent climbing.
+    """
+    if total_distance_m <= 0:
+        return 0
+    km = total_distance_m / 1000.0
+    distance_cost = KCAL_PER_KG_KM * max(0.0, weight_kg) * km
+    climb_joules = max(0.0, weight_kg) * 9.81 * max(0, total_ascent_m)
+    climb_cost = climb_joules / 4184.0 / RUNNING_MECHANICAL_EFFICIENCY
+    return int(round(distance_cost + climb_cost))
+
+
+def estimate_avg_power(total_distance_m: float, total_time_sec: int,
+                       total_ascent_m: int = 0,
+                       weight_kg: float = DEFAULT_BODY_WEIGHT_KG) -> int:
+    """Estimate average running power in 瓦 (W)."""
+    if total_distance_m <= 0 or total_time_sec <= 0:
+        return 0
+    speed = total_distance_m / total_time_sec  # m/s
+    horizontal = RUNNING_POWER_COEFF * max(0.0, weight_kg) * speed
+    vertical = max(0.0, weight_kg) * 9.81 * (max(0, total_ascent_m) / total_time_sec)
+    return int(round(horizontal + vertical))
+
+
+def estimate_stride_cm(total_distance_m: float, total_steps: int) -> float:
+    """Average stride length in 厘米 (cm) = distance / steps.
+
+    Derived by the app rather than uploaded, but kept here so dry-run reports
+    can sanity-check the distance/step ratio.
+    """
+    if total_steps <= 0:
+        return 0.0
+    return round(total_distance_m / total_steps * 100.0, 1)
 
 
 def legacy_validate_coordinate(latitude: float, longitude: float) -> Coordinate:
@@ -355,7 +431,10 @@ class OutdoorRunRecordBuilder:
                      start_time_ms: int, stop_time_ms: int,
                      gps_points: List[GpsPoint],
                      five_points: Optional[List[FivePoint]] = None,
-                     calorie: int = 120, avg_power: int = 150,
+                     calorie: Optional[int] = None, avg_power: Optional[int] = None,
+                     total_ascent: Optional[int] = None,
+                     weight_kg: float = DEFAULT_BODY_WEIGHT_KG,
+                     rng: Optional[random.Random] = None,
                      room_id: int = 0) -> Tuple[str, dict, dict]:
         if not gps_points:
             raise ValueError("gps_points cannot be empty")
@@ -369,6 +448,19 @@ class OutdoorRunRecordBuilder:
         un_complete_reason = 0 if complete else 10
         avg_step_freq = round(total_steps * 60.0 / total_time_sec) if total_time_sec > 0 else 0
         speed_val = round((total_distance_m / total_time_sec) * 1000) if total_time_sec > 0 else 0
+
+        # Derive the physiological aggregates the app displays.  Anything the
+        # caller passes explicitly wins; otherwise estimate from the run data so
+        # calorie / power / ascent stay consistent with distance and time.
+        rng = rng or random
+        if total_ascent is None:
+            total_ascent = estimate_total_ascent(total_distance_m, rng)
+        if calorie is None:
+            calorie = estimate_calorie(total_distance_m, total_time_sec,
+                                       weight_kg, total_ascent)
+        if avg_power is None:
+            avg_power = estimate_avg_power(total_distance_m, total_time_sec,
+                                           total_ascent, weight_kg)
 
         sign_map = {
             "address": "",
@@ -392,7 +484,7 @@ class OutdoorRunRecordBuilder:
             "status": 1,
             "stopTime": stop_time_ms,
             "themeId": 0,
-            "totalAscent": 0,
+            "totalAscent": total_ascent,
             "totalDis": total_distance_m,
             "totalSteps": total_steps,
             "totalTime": total_time_sec,
@@ -461,7 +553,7 @@ class OutdoorRunRecordBuilder:
             "stepsPerTenSec": [b.to_dict() for b in step_buckets],
             "stopTime": stop_time_ms,
             "themeId": 0,
-            "totalAscent": 0,
+            "totalAscent": total_ascent,
             "totalDis": total_distance_m,
             "totalSteps": total_steps,
             "totalTime": total_time_sec,

@@ -23,6 +23,7 @@ from running_protocol import (
     IndoorRunRecordBuilder,
     generate_synthetic_gps_track,
     validate_outdoor_record_consistency,
+    DEFAULT_BODY_WEIGHT_KG,
 )
 from coordinate_utils import validate_coordinate
 from rank_protocol import (
@@ -569,6 +570,7 @@ class SportClient:
                        sport_type: int = 1,                # 运动类型
                        start_lat: Optional[float] = None,    # 起点纬度
                        start_lon: Optional[float] = None,    # 起点经度
+                       weight_kg: float = DEFAULT_BODY_WEIGHT_KG,  # 体重，用于估算卡路里/功率
                        dry_run: bool = False) -> dict:
 
         if start_lat is None or start_lon is None:
@@ -615,6 +617,7 @@ class SportClient:
             stop_time_ms=stop_time_ms,
             gps_points=gps_points,
             five_points=five_points,
+            weight_kg=weight_kg,
         )
         consistency = validate_outdoor_record_consistency(save_body)
         if dry_run:

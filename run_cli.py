@@ -11,6 +11,8 @@ from coordinate_utils import validate_coordinate
 from security_utils import redact_data
 from running_protocol import (
     OutdoorRunRecordBuilder,
+    DEFAULT_BODY_WEIGHT_KG,
+    estimate_stride_cm,
     generate_synthetic_gps_track,
     validate_outdoor_record_consistency,
 )
@@ -27,6 +29,8 @@ def main():
     parser.add_argument("-d", "--distance", type=float, help="跑步距离，单位米")
     parser.add_argument("--time", type=int, help="跑步用时，单位秒")
     parser.add_argument("--steps", type=int, help="跑步步数")
+    parser.add_argument("--weight", type=float, default=DEFAULT_BODY_WEIGHT_KG,
+                        help=f"体重（公斤），用于估算卡路里与功率（默认 {DEFAULT_BODY_WEIGHT_KG:g}）")
     parser.add_argument("--latitude", "--lat", dest="latitude", type=float,
                         help="跑步起点纬度（必须与设备定位锚点一致）")
     parser.add_argument("--longitude", "--lon", dest="longitude", type=float,
@@ -136,6 +140,7 @@ def main():
     print(f"距离: {distance:.1f} 米")
     print(f"用时: {duration} 秒")
     print(f"步数: {steps}")
+    print(f"体重: {args.weight:g} 公斤")
     print(f"定位锚点: {latitude:.6f}, {longitude:.6f}")
     print(f"配速: {pace_min:.2f} 分钟/公里")
 
@@ -152,8 +157,17 @@ def main():
             sel_distance_m=int(round(distance)), sel_run_time_s=duration,
         ).build_record(
             int(round(distance)), duration, steps, start_time_ms, stop_time_ms,
-            points, fixed_points,
+            points, fixed_points, weight_kg=args.weight,
         )
+
+        # Fields the app renders (消耗 / 爬升 / 平均功率 / 步频 / 步幅).
+        print("\n派生指标（dry-run）")
+        print(f"消耗: {record['calorie']} 千卡")
+        print(f"爬升高度: {record['totalAscent']} 米")
+        print(f"平均功率: {record['avgPower']} 瓦")
+        print(f"平均步频: {record['avgStepFreq']} 步/分钟")
+        print(f"平均步幅: {estimate_stride_cm(distance, steps):.1f} 厘米")
+
         res = {
             "error": 10000,
             "message": "dry-run: record generated and validated; nothing uploaded",
@@ -170,6 +184,7 @@ def main():
             sport_type=args.type,
             start_lat=latitude,
             start_lon=longitude,
+            weight_kg=args.weight,
         )
 
     if res.get("error") == 10000 or res.get("code") == 0:

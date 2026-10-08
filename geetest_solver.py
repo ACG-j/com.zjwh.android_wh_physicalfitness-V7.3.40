@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import random
+import shutil
 import socketserver
 import tempfile
 import threading
@@ -20,6 +21,51 @@ from playwright.async_api import async_playwright
 import requests
 
 logger = logging.getLogger("geetest_solver")
+
+# Environment variables that let users point the solver at a system-installed
+# Chromium instead of Playwright's bundled download.
+CHROMIUM_EXECUTABLE_ENVS = (
+    "GEETEST_CHROMIUM_EXECUTABLE",
+    "PLAYWRIGHT_CHROMIUM_EXECUTABLE",
+)
+
+# Candidates searched on PATH when no explicit executable is configured.
+CHROMIUM_BINARY_CANDIDATES = (
+    "chromium",
+    "chromium-browser",
+    "google-chrome",
+    "google-chrome-stable",
+    "chrome",
+)
+
+
+def resolve_chromium_executable(explicit: Optional[str] = None) -> Optional[str]:
+    """Resolve which Chromium binary to launch.
+
+    Priority:
+      1. an explicit path passed by the caller
+      2. GEETEST_CHROMIUM_EXECUTABLE / PLAYWRIGHT_CHROMIUM_EXECUTABLE
+      3. the first chromium-like binary found on PATH
+
+    Returning ``None`` lets Playwright use its own bundled browser.
+    """
+    if explicit:
+        return explicit
+
+    for env_name in CHROMIUM_EXECUTABLE_ENVS:
+        env_path = os.environ.get(env_name)
+        if env_path:
+            # Allow opting back into Playwright's bundled browser.
+            if env_path.strip().lower() in ("0", "none", "bundled", "playwright"):
+                return None
+            return env_path
+
+    for candidate in CHROMIUM_BINARY_CANDIDATES:
+        found = shutil.which(candidate)
+        if found:
+            return found
+
+    return None
 
 
 class QuietHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
@@ -111,11 +157,12 @@ class GeeTestResult:
 class GeeTestV4Solver:
     """Automated solver for GeeTest v4 sliding captcha."""
 
-    def __init__(self, temp_dir: Optional[str] = None):
+    def __init__(self, temp_dir: Optional[str] = None, chromium_executable: Optional[str] = None):
         if temp_dir is None:
             temp_dir = tempfile.gettempdir()
         self.temp_dir = os.path.abspath(temp_dir)
         self.html_file = os.path.join(self.temp_dir, "gt4_bridge.html")
+        self.chromium_executable = resolve_chromium_executable(chromium_executable)
         self._ensure_html()
 
     def _ensure_html(self):
@@ -202,6 +249,9 @@ class GeeTestV4Solver:
                         "--disable-infobars"
                     ]
                 }
+                if self.chromium_executable:
+                    launch_kwargs["executable_path"] = self.chromium_executable
+                    logger.debug("Using system Chromium: %s", self.chromium_executable)
                 browser = await p.chromium.launch(**launch_kwargs)
                 context_kwargs = {
                     "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
