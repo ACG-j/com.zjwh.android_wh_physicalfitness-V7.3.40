@@ -23,6 +23,7 @@ from running_protocol import (
     IndoorRunRecordBuilder,
     generate_synthetic_gps_track,
     validate_outdoor_record_consistency,
+    build_obs_payload,
     DEFAULT_BODY_WEIGHT_KG,
 )
 from coordinate_utils import validate_coordinate
@@ -39,6 +40,27 @@ logger = logging.getLogger("sport_client")
 install_redaction_filter(logger)
 
 DEFAULT_HOST_RUN = "https://run.gxapp.iydsj.com"
+
+
+def _extract_rrid(result: dict) -> int:
+    """Pull the record id from a save response (data may be a dict or JSON str)."""
+    if not isinstance(result, dict):
+        return 0
+    data = result.get("data")
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except (TypeError, json.JSONDecodeError):
+            data = None
+    if isinstance(data, dict):
+        for key in ("rrid", "rrId", "id"):
+            value = data.get(key)
+            if value not in (None, "", 0):
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    return 0
+    return 0
 DEFAULT_HOST_DISCOVERY = "https://discovery.gxapp.iydsj.com"
 
 
@@ -610,7 +632,7 @@ class SportClient:
             sel_distance_m=int(round(total_distance_m)),
             sel_run_time_s=total_time_sec,
         )
-        endpoint, save_body, obs_payload = builder.build_record(
+        endpoint, save_body, _ = builder.build_record(
             total_distance_m=int(round(total_distance_m)),
             total_time_sec=total_time_sec,
             total_steps=total_steps,
@@ -628,16 +650,40 @@ class SportClient:
                 "dryRun": True,
                 "data": {"uuid": builder.uuid_str, **consistency},
             }
-        hour = time.strftime("%Y%m%d%H", time.localtime(start_time_ms / 1000))
-        upload_result = self._upload_obs_payload(
-            f"run_data/{hour}/{builder.uuid_str}.json",
-            obs_payload,
-        )
-        if upload_result.get("error") != 10000:
-            upload_result["stage"] = "obs_upload"
-            return upload_result
+
+        # Device order: save the record first, then upload the OBS track keyed
+        # by the server-assigned rrid (the 10 s window ids depend on it).
         url = f"{DEFAULT_HOST_RUN}{endpoint}"
-        return self.execute_request("POST", url, save_body)
+        save_result = self.execute_request("POST", url, save_body)
+        if save_result.get("error") != 10000:
+            return save_result
+
+        rrid = _extract_rrid(save_result)
+        obs_payload = build_obs_payload(
+            gps_points, five_points,
+            uid=int(self.uid or 0),
+            uuid_str=builder.uuid_str,
+            start_time_ms=start_time_ms,
+            total_time_sec=total_time_sec,
+            total_distance_m=int(round(total_distance_m)),
+            total_steps=int(save_body.get("totalSteps") or total_steps),
+            rrid=rrid,
+            sport_type=sport_type,
+            weight_kg=weight_kg,
+        )
+
+        hour = time.strftime("%Y%m%d%H", time.localtime(start_time_ms / 1000))
+        obs_keys = [f"run_data/{hour}/{builder.uuid_str}.json"]
+        if rrid:
+            obs_keys.append(f"run_data/{int(rrid) // 1000000}/{int(rrid)}")
+        for object_key in obs_keys:
+            upload_result = self._upload_obs_payload(object_key, obs_payload)
+            if upload_result.get("error") != 10000:
+                upload_result["stage"] = "obs_upload"
+                upload_result["saveResult"] = save_result
+                return upload_result
+
+        return save_result
 
     def submit_indoor_exercise(self,
                                total_time_sec: int = 1200,
