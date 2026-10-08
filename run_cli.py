@@ -150,7 +150,8 @@ def main():
         stop_time_ms = int(time.time() * 1000)
         start_time_ms = stop_time_ms - duration * 1000
         points, fixed_points = generate_synthetic_gps_track(
-            latitude, longitude, int(round(distance)), duration, start_time_ms
+            latitude, longitude, int(round(distance)), duration, start_time_ms,
+            total_steps=steps,
         )
         _, record, _ = OutdoorRunRecordBuilder(
             uid=int(uid or 0), unid=int(args.unid), sport_type=args.type,

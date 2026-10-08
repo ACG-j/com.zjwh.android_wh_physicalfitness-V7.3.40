@@ -600,6 +600,7 @@ class SportClient:
             total_distance_m=total_distance_m,
             total_time_sec=total_time_sec,
             start_time_ms=start_time_ms,
+            total_steps=total_steps,
         )
 
         builder = OutdoorRunRecordBuilder(
