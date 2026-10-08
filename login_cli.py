@@ -9,6 +9,7 @@ sys.path.insert(0, cur_dir)
 
 from sport_client import SportClient
 from security_utils import mask_secret, redact_data
+from credentials import save_credentials
 
 
 def print_banner():
@@ -102,6 +103,16 @@ def main():
 
         if resp.get("error") == 10000 and "data" in resp and isinstance(resp["data"], dict):
             format_login_success(resp["data"])
+            path = save_credentials(
+                token=resp["data"].get("token"),
+                uid=resp["data"].get("uid"),
+                unid=resp["data"].get("unid"),
+                username=username,
+            )
+            if path:
+                print(f"凭据已保存: {path}")
+                print("（run_cli.py / policy_cli.py 未传 -t/-u 时会自动读取）")
+                print()
         else:
             format_login_error(resp)
 
