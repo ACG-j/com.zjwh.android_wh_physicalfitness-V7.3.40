@@ -793,10 +793,16 @@ def generate_synthetic_gps_track(start_lat: float, start_lon: float,
     p1, p2 = rng.uniform(0.0, 2 * math.pi), rng.uniform(0.0, 2 * math.pi)
     w1, w2 = rng.uniform(1000.0, 2500.0), rng.uniform(350.0, 700.0)
 
-    # Cadence follows speed weakly (v**0.16), then is scaled so the integral
-    # equals the requested total number of steps exactly.
-    cad_prof = [((max(0.35, speeds[i]) / base_speed) ** 0.16) * (1.0 + rng.gauss(0.0, 0.012))
-                for i in range(n)]
+    # Cadence follows speed weakly (v**0.16) plus a slow drift and per-window
+    # counting noise, then is scaled so the integral equals the requested total
+    # number of steps exactly.  The variation (not just the level) is what keeps
+    # 10 s windows from collapsing to a two-value pattern on steady runs.
+    cad_prof = []
+    drift = 0.0
+    for i in range(n):
+        drift = drift * 0.97 + rng.gauss(0.0, 0.010)
+        ratio = (max(0.35, speeds[i]) / base_speed) ** 0.16
+        cad_prof.append(ratio * (1.0 + drift + rng.gauss(0.0, 0.025)))
     integral = sum(0.5 * (cad_prof[i - 1] + cad_prof[i]) / 60.0 * deltas[i - 1]
                    for i in range(1, n))
     cad_scale = (float(total_steps) / integral) if integral > 0 else 0.0
