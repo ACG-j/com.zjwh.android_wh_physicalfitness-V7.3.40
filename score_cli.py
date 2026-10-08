@@ -20,6 +20,15 @@ def main():
     parser.add_argument("--proxy", help="代理地址")
     args = parser.parse_args()
 
+    from credentials import resolve as _resolve_creds
+    _cred_token, _cred_uid, _cred_unid = _resolve_creds()
+    if not args.token:
+        args.token = _cred_token
+    if not args.uid:
+        args.uid = _cred_uid
+    if (not args.unid or args.unid == "0") and _cred_unid:
+        args.unid = str(_cred_unid)
+
     token = args.token
     if not token:
         try:
