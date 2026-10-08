@@ -35,12 +35,14 @@ class CoordinateConsistencyTests(unittest.TestCase):
 
         track = json.loads(record["allLocJson"])
         fixed = json.loads(record["fivePointJson"])
+        if isinstance(fixed, dict):
+            fixed = json.loads(fixed["fivePointJson"])
         self.assertTrue(coordinates_match(
             record["latitude"], record["longitude"],
             track[0]["lat"], track[0]["lon"],
         ))
         self.assertTrue(coordinates_match(
-            fixed[0]["lat"], fixed[0]["lon"],
+            fixed[0]["lat"], fixed[0]["lng"],
             track[0]["lat"], track[0]["lon"],
         ))
         summary = validate_outdoor_record_consistency(record)
@@ -81,7 +83,11 @@ class CoordinateConsistencyTests(unittest.TestCase):
             2000, 1200, 2000, 0, 1200000, points, fixed_points,
         )
         fixed = json.loads(record["fivePointJson"])
-        fixed[0]["lon"] = 116.0
+        if isinstance(fixed, dict):
+            fixed = json.loads(fixed["fivePointJson"])
+        # Points now carry GCJ glat/glon, which is what the server judges on.
+        fixed[0]["glat"] = 39.0
+        fixed[0]["glon"] = 116.0
         record["fivePointJson"] = json.dumps(fixed)
         with self.assertRaisesRegex(ValueError, "fixed point"):
             validate_outdoor_record_consistency(record)

@@ -130,6 +130,25 @@ def wgs84_to_gcj02(lat: float, lon: float) -> Tuple[float, float]:
     return round(lat + dlat, 7), round(lon + dlon, 7)
 
 
+def gcj02_to_wgs84(lat: float, lon: float) -> Tuple[float, float]:
+    """Convert GCJ-02 back to WGS-84 (single-step inverse, ~1 m error).
+
+    The server hands out check-in points as lat/lon (BD-09) + glat/glon (GCJ-02);
+    the generator works in WGS-84, so feed it gcj02_to_wgs84(glat, glon).
+    """
+    if _out_of_china(lat, lon):
+        return lat, lon
+    dlat = _gcj_transform_lat(lon - 105.0, lat - 35.0)
+    dlon = _gcj_transform_lon(lon - 105.0, lat - 35.0)
+    rad_lat = lat / 180.0 * math.pi
+    magic = math.sin(rad_lat)
+    magic = 1 - _GCJ_EE * magic * magic
+    sqrt_magic = math.sqrt(magic)
+    dlat = (dlat * 180.0) / ((_GCJ_A * (1 - _GCJ_EE)) / (magic * sqrt_magic) * math.pi)
+    dlon = (dlon * 180.0) / (_GCJ_A / sqrt_magic * math.cos(rad_lat) * math.pi)
+    return round(lat - dlat, 7), round(lon - dlon, 7)
+
+
 def legacy_validate_coordinate(latitude: float, longitude: float) -> Coordinate:
     """Validate and normalize the single coordinate source used by a run."""
     return validate_coordinate(latitude, longitude)
@@ -306,27 +325,45 @@ class GpsPoint:
 
 class FivePoint:
     def __init__(self, lat: float, lon: float, is_fixed: int = 1,
-                 is_pass: bool = True, point_name: str = "", position: int = 0):
+                 is_pass: bool = True, point_name: str = "", position: int = 0,
+                 glat: Optional[float] = None, glon: Optional[float] = None,
+                 radius: float = 15.0, start_ms: int = 0):
         self.lat = lat
         self.lon = lon
+        self.glat = glat
+        self.glon = glon
         self.isFixed = is_fixed
         self.isPass = is_pass
         self.pointName = point_name
         self.position = position
+        self.radius = radius
+        self.startTime = start_ms
+
+    def _gcj(self) -> Tuple[float, float]:
+        if self.glat is not None and self.glon is not None:
+            return self.glat, self.glon
+        return wgs84_to_gcj02(self.lat, self.lon)
 
     def to_dict(self) -> dict:
+        glat, glon = self._gcj()
         return {
-            "lat": self.lat,
-            "lon": self.lon,
+            "flag": self.startTime,
+            "glat": glat,
+            "glon": glon,
+            "id": self.position,
             "isFixed": self.isFixed,
             "isPass": self.isPass,
+            "lat": self.lat,
+            "lng": self.lon,
             "pointName": self.pointName,
-            "position": self.position
+            "position": self.position,
+            "radius": self.radius,
+            "state": 0,
         }
 
     def to_obs_dict(self, start_ms: int, index: int) -> dict:
-        """Real-device record-side keys (glat/glon, lng, isFixed=0, position 999)."""
-        glat, glon = wgs84_to_gcj02(self.lat, self.lon)
+        """Record-side keys (glat/glon, lng, isFixed=0, position 999)."""
+        glat, glon = self._gcj()
         return {
             "flag": start_ms,
             "glat": glat,
@@ -752,12 +789,81 @@ def build_obs_payload(gps_points: List[GpsPoint], five_points: Optional[List[Fiv
     }
 
 
+def order_points_loop(points_ll: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+    """Order (lat, lon) points into a simple loop by bearing around the centroid."""
+    if len(points_ll) < 3:
+        return list(points_ll)
+    lat0 = sum(p[0] for p in points_ll) / len(points_ll)
+    lon0 = sum(p[1] for p in points_ll) / len(points_ll)
+    kx = math.cos(math.radians(lat0))
+
+    def _ang(p):
+        return math.atan2(p[0] - lat0, (p[1] - lon0) * kx)
+
+    return sorted(points_ll, key=_ang)
+
+
+def _build_loop_through_points(control_ll, n_per_seg: int = 60):
+    """Closed Catmull-Rom loop passing exactly through the given control points.
+
+    control_ll: list of (lat, lon) in WGS-84, in visit order.  The returned path
+    is rotated so it starts at the point farthest from any control point, so the
+    run's start pin does not sit on top of a check-in marker.
+    """
+    n = len(control_ll)
+    lat0 = sum(p[0] for p in control_ll) / n
+    lon0 = sum(p[1] for p in control_ll) / n
+    kx = math.cos(math.radians(lat0))
+    m_lat = 111320.0
+    m_lon = 111320.0 * kx
+    xy = [((lon - lon0) * m_lon, (lat - lat0) * m_lat) for lat, lon in control_ll]
+
+    dense = []
+    for i in range(n):
+        p0, p1 = xy[(i - 1) % n], xy[i]
+        p2, p3 = xy[(i + 1) % n], xy[(i + 2) % n]
+        for j in range(n_per_seg):
+            t = j / n_per_seg
+            t2, t3 = t * t, t * t * t
+            x = 0.5 * ((2 * p1[0]) + (-p0[0] + p2[0]) * t
+                       + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2
+                       + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3)
+            y = 0.5 * ((2 * p1[1]) + (-p0[1] + p2[1]) * t
+                       + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2
+                       + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)
+            dense.append((x, y))
+    body = [(lat0 + y / m_lat, lon0 + x / m_lon) for x, y in dense]
+
+    # Rotate the ring so it starts at the point farthest from every control point.
+    best_i, best_d = 0, -1.0
+    for i, (la, lo) in enumerate(body):
+        d = min(_haversine_m(la, lo, cl[0], cl[1]) for cl in control_ll)
+        if d > best_d:
+            best_d, best_i = d, i
+    if best_i:
+        body = body[best_i:] + body[:best_i]
+
+    def _cum(path):
+        c = [0.0]
+        for i in range(1, len(path)):
+            c.append(c[-1] + _haversine_m(path[i - 1][0], path[i - 1][1],
+                                          path[i][0], path[i][1]))
+        c.append(c[-1] + _haversine_m(path[-1][0], path[-1][1],
+                                      path[0][0], path[0][1]))
+        return c
+
+    cum = _cum(body)
+    path = body + [body[0]]
+    return path, cum
+
+
 def generate_synthetic_gps_track(start_lat: float, start_lon: float,
                                  total_distance_m: int, total_time_sec: int,
                                  start_time_ms: int,
                                  total_steps: Optional[int] = None,
                                  weight_kg: float = DEFAULT_BODY_WEIGHT_KG,
                                  height_cm: float = DEFAULT_HEIGHT_CM,
+                                 control_points: Optional[List[Tuple[float, float]]] = None,
                                  rng: Optional[random.Random] = None
                                  ) -> Tuple[List[GpsPoint], List[FivePoint]]:
     start_lat, start_lon = validate_coordinate(start_lat, start_lon)
@@ -786,7 +892,9 @@ def generate_synthetic_gps_track(start_lat: float, start_lon: float,
         cum = [c * k for c in cum]
     cum[-1] = float(total_distance_m)
 
-    path, path_cum = _build_route(start_lat, start_lon, float(total_distance_m), rng)
+    path, path_cum = (_build_loop_through_points(control_points)
+                      if control_points and len(control_points) >= 2
+                      else _build_route(start_lat, start_lon, float(total_distance_m), rng))
 
     e_base = rng.uniform(15.0, 130.0)
     a1, a2 = rng.uniform(2.0, 5.0), rng.uniform(0.5, 1.2)
@@ -868,7 +976,17 @@ def validate_outdoor_record_consistency(record: dict,
         raise ValueError("record must be a dictionary")
     try:
         track = json.loads(record.get("allLocJson") or "[]")
-        fixed = json.loads(record.get("fivePointJson") or "[]")
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("record location fields must contain valid JSON") from exc
+    fixed_raw = record.get("fivePointJson") or "[]"
+    try:
+        parsed_fixed = json.loads(fixed_raw) if isinstance(fixed_raw, str) else fixed_raw
+        # Body fivePointJson is a wrapper string; unwrap to the inner array.
+        if isinstance(parsed_fixed, dict) and "fivePointJson" in parsed_fixed:
+            inner = parsed_fixed["fivePointJson"]
+            fixed = json.loads(inner) if isinstance(inner, str) else inner
+        else:
+            fixed = parsed_fixed
     except (TypeError, json.JSONDecodeError) as exc:
         raise ValueError("record location fields must contain valid JSON") from exc
     if not isinstance(track, list) or not track:
@@ -890,11 +1008,21 @@ def validate_outdoor_record_consistency(record: dict,
         validate_coordinate(point.get("lat"), point.get("lon"))
         for point in track
     ]
+    track_gcj = [wgs84_to_gcj02(tp.latitude, tp.longitude) for tp in track_coordinates]
     for point in fixed:
-        fixed_coord = validate_coordinate(point.get("lat"), point.get("lon"))
-        if not any(coordinates_match(fixed_coord.latitude, fixed_coord.longitude,
-                                     track_point.latitude, track_point.longitude,
-                                     tolerance) for track_point in track_coordinates):
+        if point.get("glat") is not None and point.get("glon") is not None:
+            # Server check-in point: judge in GCJ within the hit radius.
+            fixed_coord = validate_coordinate(point.get("glat"), point.get("glon"))
+            limit = max(float(point.get("radius") or 15.0), 20.0)
+            hit = any(_haversine_m(fixed_coord.latitude, fixed_coord.longitude,
+                                   gla, glo) <= limit for gla, glo in track_gcj)
+        else:
+            fixed_coord = validate_coordinate(point.get("lat"),
+                                              point.get("lon", point.get("lng")))
+            hit = any(coordinates_match(fixed_coord.latitude, fixed_coord.longitude,
+                                        tp.latitude, tp.longitude, tolerance)
+                      for tp in track_coordinates)
+        if not hit:
             raise ValueError("a fixed point is not present in the full track")
 
     return {"trackPoints": len(track), "fixedPoints": len(fixed),
@@ -1035,6 +1163,11 @@ class OutdoorRunRecordBuilder:
                      total_ascent: Optional[int] = None,
                      weight_kg: float = DEFAULT_BODY_WEIGHT_KG,
                      rng: Optional[random.Random] = None,
+                     policy: int = 1,
+                     sel_distance: Optional[int] = None,
+                     sel_run_time: Optional[int] = None,
+                     face_check: int = 0,
+                     address: str = "",
                      room_id: int = 0) -> Tuple[str, dict, dict]:
         if not gps_points:
             raise ValueError("gps_points cannot be empty")
@@ -1058,7 +1191,9 @@ class OutdoorRunRecordBuilder:
         if window_steps > 0:
             total_steps = window_steps
 
-        complete = (total_distance_m >= self.sel_distance_m) and (total_time_sec >= self.sel_run_time_s)
+        sel_distance = self.sel_distance_m if sel_distance is None else int(sel_distance)
+        sel_run_time = self.sel_run_time_s if sel_run_time is None else int(sel_run_time)
+        complete = (total_distance_m >= sel_distance) and (total_time_sec >= sel_run_time)
         un_complete_reason = 0 if complete else 10
         avg_step_freq = round(total_steps * 60.0 / total_time_sec) if total_time_sec > 0 else 0
         # `speed` is the app's 毫-分/公里 unit: pace (min/km) × 1000.
@@ -1076,20 +1211,20 @@ class OutdoorRunRecordBuilder:
                                            total_ascent, weight_kg)
 
         sign_map = {
-            "address": "",
+            "address": address,
             "avgPower": avg_power,
             "avgStepFreq": avg_step_freq,
             "calorie": calorie,
             "complete": complete,
             "errorCode": 0,
-            "faceCheck": 0,
+            "faceCheck": face_check,
             "geeToken": "",
             "getPrize": False,
             # Java reflection signs String.valueOf(null), not an omitted field.
             "goalId": "null",
-            "policy": 1,
-            "selDistance": self.sel_distance_m,
-            "selRunTime": self.sel_run_time_s,
+            "policy": policy,
+            "selDistance": sel_distance,
+            "selRunTime": sel_run_time,
             "selectedUnid": self.unid,
             "speed": speed_val,
             "sportType": self.sport_type,
@@ -1129,18 +1264,28 @@ class OutdoorRunRecordBuilder:
         ]
 
         all_loc_json = json.dumps([p.to_dict() for p in gps_points], separators=(",", ":"))
-        five_pt_json = json.dumps([p.to_dict() for p in (five_points or [])], separators=(",", ":"))
+        # Body fivePointJson is a wrapper string (the app's Bean reads it as a
+        # String whose content is the JSON array text).
+        five_inner = json.dumps([p.to_dict() for p in (five_points or [])],
+                                separators=(",", ":"), ensure_ascii=False)
+        five_pt_json = json.dumps({
+            "useZip": False,
+            "fivePointJson": five_inner,
+            "runAreaId": -1,
+            "geoFencesJson": "[]",
+            "freedomShowFence": False,
+        }, separators=(",", ":"), ensure_ascii=False)
 
 
         save_record = {
-            "address": "",
+            "address": address,
             "allLocJson": all_loc_json,
             "avgPower": avg_power,
             "avgStepFreq": avg_step_freq,
             "calorie": calorie,
             "complete": complete,
             "errorCode": 0,
-            "faceCheck": 0,
+            "faceCheck": face_check,
             "fivePointJson": five_pt_json,
             "geeToken": "",
             "getPrize": False,
@@ -1152,12 +1297,12 @@ class OutdoorRunRecordBuilder:
             "maxRunTime": 0,
             "minSteps": 0,
             "originalSign": original_sign,
-            "policy": 1,
+            "policy": policy,
             "recordUrl": "",
             "roomId": room_id,
             "segmentJson": "[]",
-            "selDistance": self.sel_distance_m,
-            "selRunTime": self.sel_run_time_s,
+            "selDistance": sel_distance,
+            "selRunTime": sel_run_time,
             "selectedUnid": self.unid,
             "signature": signature,
             "speed": speed_val,

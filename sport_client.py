@@ -1,5 +1,6 @@
 import base64
 import collections
+import hashlib
 import json
 import logging
 import os
@@ -24,6 +25,9 @@ from running_protocol import (
     generate_synthetic_gps_track,
     validate_outdoor_record_consistency,
     build_obs_payload,
+    order_points_loop,
+    gcj02_to_wgs84,
+    FivePoint,
     DEFAULT_BODY_WEIGHT_KG,
 )
 from coordinate_utils import validate_coordinate
@@ -585,6 +589,45 @@ class SportClient:
         return self.execute_request("POST", url, body)
 
     # 6. Run Submissions
+    def _run_policy(self, run_mode: int = 1):
+        """Return (policy, policy_ts, min_distance, face_check) for the run."""
+        res = self.get_run_policy(run_mode=run_mode)
+        data = res.get("data")
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except json.JSONDecodeError:
+                data = {}
+        data = data or {}
+        rule = data.get("runRuleModel") or {}
+        # Record-side policy for a score run is 0 so the app draws the check-ins.
+        policy = 0 if run_mode == 1 else int(data.get("policy") or 1)
+        policy_ts = int(data.get("timestamp") or 0)
+        min_distance = int(rule.get("minDistance") or 0)
+        face_check = 1 if rule.get("faceVerify") else 0
+        return policy, policy_ts, min_distance, face_check
+
+    def _checkin_points(self, lat: float, lon: float) -> list:
+        """Fetch the server-issued check-in points around (lat, lon)."""
+        url = f"{DEFAULT_HOST_RUN}/api/v560/get/1/distance/1"
+        http_url = url.replace("https://", "http://", 1)
+        sign = hashlib.md5((http_url + SPORT_STATIC_SALT).encode("utf-8")).hexdigest().lower()
+        ts = int(time.time() * 1000)
+        runec_input = "%d%.6f%.6f%d" % (int(self.uid or 0), lon, lat, (ts // 1000) * 1000)
+        runec = self.crypto.encrypt_observed(runec_input, self.session, ts)
+        body = {
+            "sportType": 4, "longitude": lon, "latitude": lat, "sign": sign,
+            "uuid": str(uuid.uuid4()), "selectedUnid": str(self.unid), "runec": runec,
+        }
+        res = self.execute_request("POST", url, body)
+        data = res.get("data")
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except json.JSONDecodeError:
+                data = {}
+        return (data or {}).get("pointsResModels") or []
+
     def submit_outdoor_run(self,
                        total_distance_m: float = 2360.0,   # 距离，米
                        total_time_sec: int = 845,          # 时长，秒
@@ -615,15 +658,46 @@ class SportClient:
 
         start_time_ms = stop_time_ms - (total_time_sec * 1000)
 
-    # 生成模拟轨迹
-        gps_points, five_points = generate_synthetic_gps_track(
+        # Fetch policy (runes header + selDistance/faceCheck) and, for a score
+        # run, the server-issued check-in points that the track must pass.
+        run_mode = 1 if sport_type == 1 else 2
+        policy, policy_ts, min_distance, face_check = self._run_policy(run_mode)
+
+        control_points = None
+        five_points = None
+        if sport_type == 1:
+            checkins = self._checkin_points(start_lat, start_lon)
+            usable = [c for c in checkins
+                      if c.get("glat") is not None and c.get("glon") is not None]
+            if usable:
+                control_points = order_points_loop([
+                    gcj02_to_wgs84(float(c["glat"]), float(c["glon"])) for c in usable
+                ])
+                five_points = [
+                    FivePoint(
+                        lat=float(c["lat"] if c.get("lat") is not None else c["glat"]),
+                        lon=float(c["lon"] if c.get("lon") is not None else c["glon"]),
+                        is_fixed=int(c.get("isFixed") or 0),
+                        point_name=str(c.get("pointName") or ""),
+                        position=i + 1,
+                        glat=float(c["glat"]), glon=float(c["glon"]),
+                        radius=float(c.get("radius") or 15.0),
+                        start_ms=start_time_ms,
+                    ) for i, c in enumerate(usable)
+                ]
+
+        # 生成模拟轨迹
+        gps_points, default_five = generate_synthetic_gps_track(
             start_lat=start_lat,
             start_lon=start_lon,
             total_distance_m=total_distance_m,
             total_time_sec=total_time_sec,
             start_time_ms=start_time_ms,
             total_steps=total_steps,
+            control_points=control_points,
         )
+        if five_points is None:
+            five_points = default_five
 
         builder = OutdoorRunRecordBuilder(
             uid=int(self.uid or 0),
@@ -641,6 +715,10 @@ class SportClient:
             gps_points=gps_points,
             five_points=five_points,
             weight_kg=weight_kg,
+            policy=policy,
+            sel_distance=(min_distance or None),
+            sel_run_time=total_time_sec,
+            face_check=face_check,
         )
         consistency = validate_outdoor_record_consistency(save_body)
         if dry_run:
@@ -654,7 +732,11 @@ class SportClient:
         # Device order: save the record first, then upload the OBS track keyed
         # by the server-assigned rrid (the 10 s window ids depend on it).
         url = f"{DEFAULT_HOST_RUN}{endpoint}"
-        save_result = self.execute_request("POST", url, save_body)
+        save_headers = {"runef": f"{builder.uuid_str}{start_time_ms}"}
+        if policy_ts:
+            save_headers["runes"] = f"{policy_ts}{int(self.uid or 0)}"
+        save_result = self.execute_request("POST", url, save_body,
+                                           custom_headers=save_headers)
         if save_result.get("error") != 10000:
             return save_result
 
