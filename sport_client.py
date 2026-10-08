@@ -669,6 +669,11 @@ class SportClient:
             checkins = self._checkin_points(start_lat, start_lon)
             usable = [c for c in checkins
                       if c.get("glat") is not None and c.get("glon") is not None]
+            if not usable:
+                return {
+                    "error": -1,
+                    "message": "未能获取打卡点（限流 10603 或接口异常），本次不提交",
+                }
             if usable:
                 control_points = order_points_loop([
                     gcj02_to_wgs84(float(c["glat"]), float(c["glon"])) for c in usable
