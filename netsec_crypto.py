@@ -185,6 +185,39 @@ class NetSecCrypto:
             "t": "0"
         }
 
+    def encrypt_observed(self,
+                         caller_plaintext: Union[str, bytes, dict, list],
+                         session: NetSecSession,
+                         ts_ms: Optional[int] = None) -> str:
+        """Build the nested "observed" envelope used by runec on the check-in
+        point endpoint: container platform=1, ms timestamp, outer order k/p/d/h/t."""
+        if isinstance(caller_plaintext, (dict, list)):
+            caller_bytes = json.dumps(caller_plaintext, separators=(",", ":"),
+                                      ensure_ascii=False).encode("utf-8")
+        elif isinstance(caller_plaintext, str):
+            caller_bytes = caller_plaintext.encode("utf-8")
+        else:
+            caller_bytes = caller_plaintext
+        b64_data = base64.b64encode(caller_bytes).decode("ascii")
+        if ts_ms is None:
+            ts_ms = int(time.time() * 1000)
+        container = json.dumps(collections.OrderedDict([
+            ("data", b64_data),
+            ("timeStamp", ts_ms),
+            ("platform", 1),
+            ("keyDataOne", session.keyDataOne),
+            ("keyDataTwo", session.keyDataTwo),
+            ("keyDataThree", session.keyDataThree),
+            ("keyDataFour", session.keyDataFour),
+        ]), separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        printable_pool = [chr(i) for i in range(0x21, 0x7E)]
+        req_key = "".join(random.choice(printable_pool) for _ in range(16)).encode("ascii")
+        aes_cipher = AES.new(req_key, AES.MODE_CBC, iv=bytes(16))
+        d = base64.b64encode(aes_cipher.encrypt(pad(container, 16))).decode("ascii")
+        h = hashlib.md5(container).hexdigest().lower()
+        k = base64.b64encode(self.request_rsa_cipher.encrypt(req_key)).decode("ascii")
+        return '{"k":"%s","p":101,"d":"%s","h":"%s","t":0}' % (k, d, h)
+
     def decrypt_response(self,
                          wire_response: Union[str, dict],
                          session: NetSecSession,
