@@ -324,6 +324,23 @@ class FivePoint:
             "position": self.position
         }
 
+    def to_obs_dict(self, start_ms: int, index: int) -> dict:
+        """Real-device record-side keys (glat/glon, lng, isFixed=0, position 999)."""
+        glat, glon = wgs84_to_gcj02(self.lat, self.lon)
+        return {
+            "flag": start_ms,
+            "glat": glat,
+            "glon": glon,
+            "id": index,
+            "isFixed": 0,
+            "isPass": True,
+            "lat": round(self.lat, 7),
+            "lng": round(self.lon, 7),
+            "pointName": "",
+            "position": 999,
+            "state": 0,
+        }
+
 
 def _largest_remainder(total: int, weights: List[float]) -> List[int]:
     """Split an integer total across buckets so the parts always sum to total."""
@@ -678,6 +695,61 @@ def build_laps(points: List[GpsPoint], start_ms: int) -> List[dict]:
             "step": lap_steps,
         })
     return laps
+
+
+def build_obs_payload(gps_points: List[GpsPoint], five_points: Optional[List[FivePoint]], *,
+                      uid: int, uuid_str: str, start_time_ms: int, total_time_sec: int,
+                      total_distance_m: int, total_steps: int, rrid: int = 0,
+                      sport_type: int = 1,
+                      weight_kg: float = DEFAULT_BODY_WEIGHT_KG) -> dict:
+    """Assemble the 10-key OBS object (single-layer gzip+base64 values).
+
+    ``rrid`` is only known *after* the record is saved, so the caller rebuilds
+    this object once the server returns it; the 10 s window ids then use the
+    real rrid (id = (rrid % 100000) * 1000 + window right edge).
+    """
+    _ensure_cumulative(gps_points, float(total_distance_m), int(total_steps))
+    speed_windows, step_windows = _ten_sec_windows(
+        gps_points, start_time_ms, total_time_sec, rrid=int(rrid or 0),
+        queue_seq=False, total_steps=int(total_steps),
+        total_distance=float(total_distance_m))
+    laps = build_laps(gps_points, start_time_ms)
+
+    obs_points = [p.to_obs_dict(start_time_ms) for p in gps_points]
+    if obs_points:
+        obs_points[0] = gps_points[0].to_obs_dict(start_time_ms, pt_type=5)
+        obs_points[-1] = gps_points[-1].to_obs_dict(start_time_ms, pt_type=6)
+    run_wrap = json.dumps({
+        "allLocJson": json.dumps(obs_points, separators=(",", ":")),
+        "useZip": False,
+    }, separators=(",", ":"), ensure_ascii=False)
+
+    five_list = [fp.to_obs_dict(start_time_ms, i + 1)
+                 for i, fp in enumerate(five_points or [])]
+    fx = {
+        # The app's Bean declares both of these as String; the value is a JSON
+        # array *text*.  Sending a raw array throws on Gson parse.
+        "fivePointJson": json.dumps(five_list, separators=(",", ":"), ensure_ascii=False),
+        "freedomShowFence": False,
+        "geoFencesJson": "[]",
+        "runAreaId": -1,
+        "useZip": False,
+    }
+
+    return {
+        "rrid": gzip_base64_encode(str(rrid) if rrid else ""),
+        "uid": gzip_base64_encode(str(uid)),
+        "uuid": gzip_base64_encode(uuid_str),
+        "run_data": gzip_base64_encode(run_wrap),
+        "step_freq_json": gzip_base64_encode(json.dumps(step_windows, separators=(",", ":"))),
+        "speed_json": gzip_base64_encode(json.dumps(speed_windows, separators=(",", ":"))),
+        "segment_json": gzip_base64_encode(""),
+        "fixed_point_json": gzip_base64_encode(
+            json.dumps(fx, separators=(",", ":"), ensure_ascii=False)),
+        "runFaceCheck": gzip_base64_encode(""),
+        "extension_json": gzip_base64_encode(""),
+        "laps_json": gzip_base64_encode(json.dumps(laps, separators=(",", ":"))),
+    }
 
 
 def generate_synthetic_gps_track(start_lat: float, start_lon: float,
@@ -1052,24 +1124,7 @@ class OutdoorRunRecordBuilder:
 
         all_loc_json = json.dumps([p.to_dict() for p in gps_points], separators=(",", ":"))
         five_pt_json = json.dumps([p.to_dict() for p in (five_points or [])], separators=(",", ":"))
-        speed_json = json.dumps([b.to_dict() for b in speed_buckets], separators=(",", ":"))
-        step_json = json.dumps([b.to_dict() for b in step_buckets], separators=(",", ":"))
 
-        # Per-kilometre laps (the app's "每公里数据") and the rich OBS track.
-        laps = build_laps(gps_points, start_time_ms)
-        obs_points = [p.to_obs_dict(start_time_ms) for p in gps_points]
-        if obs_points:
-            obs_points[0] = gps_points[0].to_obs_dict(start_time_ms, pt_type=5)
-            obs_points[-1] = gps_points[-1].to_obs_dict(start_time_ms, pt_type=6)
-        run_wrap = json.dumps({
-            "allLocJson": json.dumps(obs_points, separators=(",", ":")),
-            "useZip": False,
-        }, separators=(",", ":"), ensure_ascii=False)
-        obs_speed_json = json.dumps([dict(w, queueNum=0) for w in speed_windows],
-                                    separators=(",", ":"))
-        obs_step_json = json.dumps([dict(w, queueNum=0) for w in step_windows],
-                                   separators=(",", ":"))
-        laps_json = json.dumps(laps, separators=(",", ":"))
 
         save_record = {
             "address": "",
@@ -1085,10 +1140,11 @@ class OutdoorRunRecordBuilder:
             "getPrize": False,
             "goalId": None,
             "isUpload": False,
+            "more": False,
             "latitude": anchor_lat,
             "longitude": anchor_lon,
-            "maxRunTime": 7200,
-            "minSteps": 2000,
+            "maxRunTime": 0,
+            "minSteps": 0,
             "originalSign": original_sign,
             "policy": 1,
             "recordUrl": "",
@@ -1121,18 +1177,13 @@ class OutdoorRunRecordBuilder:
 
         validate_outdoor_record_consistency(save_record)
 
-        cos_payload = {
-            "rrid": gzip_base64_encode(""),
-            "uid": gzip_base64_encode(str(self.uid)),
-            "uuid": gzip_base64_encode(self.uuid_str),
-            "run_data": gzip_base64_encode(run_wrap),
-            "step_freq_json": gzip_base64_encode(obs_step_json),
-            "speed_json": gzip_base64_encode(obs_speed_json),
-            "segment_json": gzip_base64_encode(""),
-            "fixed_point_json": gzip_base64_encode(five_pt_json),
-            "runFaceCheck": gzip_base64_encode(""),
-            "extension_json": gzip_base64_encode(""),
-            "laps_json": gzip_base64_encode(laps_json)
-        }
+        # OBS built with rrid=0; submit_outdoor_run rebuilds it with the real
+        # rrid once the save response returns it.
+        cos_payload = build_obs_payload(
+            gps_points, five_points, uid=self.uid, uuid_str=self.uuid_str,
+            start_time_ms=start_time_ms, total_time_sec=total_time_sec,
+            total_distance_m=total_distance_m, total_steps=total_steps,
+            rrid=0, sport_type=self.sport_type, weight_kg=weight_kg,
+        )
 
         return "/api/v70260/runnings/save/record", save_record, cos_payload
