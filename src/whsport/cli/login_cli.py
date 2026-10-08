@@ -4,12 +4,10 @@ import os
 import sys
 import time
 
-cur_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, cur_dir)
 
-from sport_client import SportClient
-from security_utils import mask_secret, redact_data
-from credentials import save_credentials
+from whsport.sport_client import SportClient
+from whsport.security_utils import mask_secret, redact_data
+from whsport.credentials import save_credentials
 
 
 def print_banner():

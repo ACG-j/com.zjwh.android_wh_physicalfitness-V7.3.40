@@ -127,29 +127,6 @@ wheels = [
 ]
 
 [[package]]
-name = "com-zjwh-android-wh-physicalfitness-v7-3-40"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "numpy" },
-    { name = "opencv-python" },
-    { name = "pillow" },
-    { name = "playwright" },
-    { name = "pycryptodome" },
-    { name = "requests" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "numpy", specifier = ">=1.22.0" },
-    { name = "opencv-python", specifier = ">=4.8.0" },
-    { name = "pillow", specifier = ">=9.0.0" },
-    { name = "playwright", specifier = ">=1.40.0" },
-    { name = "pycryptodome", specifier = ">=3.18.0" },
-    { name = "requests", specifier = ">=2.28.0" },
-]
-
-[[package]]
 name = "greenlet"
 version = "3.5.6"
 source = { registry = "https://mirrors.aliyun.com/pypi/simple/" }
@@ -455,4 +432,27 @@ source = { registry = "https://mirrors.aliyun.com/pypi/simple/" }
 sdist = { url = "https://mirrors.aliyun.com/pypi/packages/e3/05/b17359e1cefb4f909b5e40b1b90a496d987258916dbbf88e842c729f510e/urllib3-2.8.0.tar.gz", hash = "sha256:63bf2ead4c879426ebf22ef2a781eeb4aa3b4ae798a0435506f8687fd5bb9b63" }
 wheels = [
     { url = "https://mirrors.aliyun.com/pypi/packages/92/9d/c4e665119135114480843e7ab388fa94d8480650450e6f8e26b70d323a4c/urllib3-2.8.0-py3-none-any.whl", hash = "sha256:0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3" },
+]
+
+[[package]]
+name = "whsport"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "numpy" },
+    { name = "opencv-python" },
+    { name = "pillow" },
+    { name = "playwright" },
+    { name = "pycryptodome" },
+    { name = "requests" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "numpy", specifier = ">=1.22.0" },
+    { name = "opencv-python", specifier = ">=4.8.0" },
+    { name = "pillow", specifier = ">=9.0.0" },
+    { name = "playwright", specifier = ">=1.40.0" },
+    { name = "pycryptodome", specifier = ">=3.18.0" },
+    { name = "requests", specifier = ">=2.28.0" },
 ]

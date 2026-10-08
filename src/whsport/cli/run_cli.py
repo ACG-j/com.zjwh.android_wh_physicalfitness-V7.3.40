@@ -4,12 +4,10 @@ import os
 import sys
 import time
 
-cur_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, cur_dir)
 
-from coordinate_utils import validate_coordinate
-from security_utils import redact_data
-from running_protocol import (
+from whsport.coordinate_utils import validate_coordinate
+from whsport.security_utils import redact_data
+from whsport.running_protocol import (
     OutdoorRunRecordBuilder,
     DEFAULT_BODY_WEIGHT_KG,
     estimate_stride_cm,
@@ -41,7 +39,7 @@ def main():
     parser.add_argument("--proxy", help="代理地址")
     args = parser.parse_args()
 
-    from credentials import resolve as _resolve_creds
+    from whsport.credentials import resolve as _resolve_creds
     _cred_token, _cred_uid, _cred_unid = _resolve_creds()
     if not args.token:
         args.token = _cred_token
@@ -185,7 +183,7 @@ def main():
             "data": validate_outdoor_record_consistency(record),
         }
     else:
-        from sport_client import SportClient
+        from whsport.sport_client import SportClient
         client = SportClient(uid=uid, token=token, unid=int(args.unid), proxy=args.proxy)
         res = client.submit_outdoor_run(
             total_distance_m=distance,

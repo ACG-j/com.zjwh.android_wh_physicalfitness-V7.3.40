@@ -12,14 +12,14 @@ import uuid
 
 import requests
 
-from netsec_crypto import (
+from whsport.netsec_crypto import (
     SPORT_STATIC_SALT,
     compute_token_sign,
     NetSecSession,
     NetSecCrypto
 )
-from geetest_solver import GeeTestV4Solver, GEETEST_IDS, GeeTestResult
-from running_protocol import (
+from whsport.geetest_solver import GeeTestV4Solver, GEETEST_IDS, GeeTestResult
+from whsport.running_protocol import (
     OutdoorRunRecordBuilder,
     IndoorRunRecordBuilder,
     generate_synthetic_gps_track,
@@ -30,15 +30,15 @@ from running_protocol import (
     FivePoint,
     DEFAULT_BODY_WEIGHT_KG,
 )
-from coordinate_utils import validate_coordinate
-from rank_protocol import (
+from whsport.coordinate_utils import validate_coordinate
+from whsport.rank_protocol import (
     RankType,
     RankSortType,
     RankGender,
     IndoorDateRange,
     LeaderboardRequestBuilder
 )
-from security_utils import install_redaction_filter
+from whsport.security_utils import install_redaction_filter
 
 logger = logging.getLogger("sport_client")
 install_redaction_filter(logger)

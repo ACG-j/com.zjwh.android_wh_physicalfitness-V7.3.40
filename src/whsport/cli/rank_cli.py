@@ -4,11 +4,9 @@ import json
 import os
 import sys
 
-cur_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, cur_dir)
 
-from sport_client import SportClient
-from rank_protocol import RankType
+from whsport.sport_client import SportClient
+from whsport.rank_protocol import RankType
 
 
 def main():
@@ -29,7 +27,7 @@ def main():
     parser.add_argument("--proxy", help="代理地址")
     args = parser.parse_args()
 
-    from credentials import resolve as _resolve_creds
+    from whsport.credentials import resolve as _resolve_creds
     _cred_token, _cred_uid, _cred_unid = _resolve_creds()
     if not args.token:
         args.token = _cred_token

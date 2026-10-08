@@ -1,13 +1,13 @@
 import json
 import unittest
 
-from running_protocol import (
+from whsport.running_protocol import (
     OutdoorRunRecordBuilder,
     generate_synthetic_gps_track,
     validate_outdoor_record_consistency,
 )
-from coordinate_utils import Coordinate, coordinates_match, validate_coordinate
-from security_utils import redact_data, redact_text
+from whsport.coordinate_utils import Coordinate, coordinates_match, validate_coordinate
+from whsport.security_utils import redact_data, redact_text
 
 
 class CoordinateConsistencyTests(unittest.TestCase):

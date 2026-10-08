@@ -19,14 +19,14 @@ import sys
 import time
 import uuid
 from typing import Dict, Optional, Tuple, Union, Any, Callable, List
-from coordinate_utils import Coordinate, validate_coordinate
+from whsport.coordinate_utils import Coordinate, validate_coordinate
 
 import requests
 from Crypto.Cipher import AES, PKCS1_v1_5
 from Crypto.PublicKey import RSA
 from Crypto.Util.Padding import pad, unpad
-from running_protocol import validate_outdoor_record_consistency
-from security_utils import redact_data
+from whsport.running_protocol import validate_outdoor_record_consistency
+from whsport.security_utils import redact_data
 
 
 
