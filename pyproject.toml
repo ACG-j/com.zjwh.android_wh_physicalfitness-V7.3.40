@@ -1,7 +1,7 @@
 [project]
-name = "com-zjwh-android-wh-physicalfitness-v7-3-40"
+name = "whsport"
 version = "0.1.0"
-description = "Add your description here"
+description = "运动世界校园 App (v7.3.90) 纯 Python 协议实现"
 readme = "README.md"
 authors = [
     { name = "ACG-j", email = "ACG-j@users.noreply.github.com" }
@@ -17,8 +17,19 @@ dependencies = [
 ]
 
 [project.scripts]
-com-zjwh-android-wh-physicalfitness-v7-3-40 = "com_zjwh_android_wh_physicalfitness_v7_3_40:main"
+whsport = "whsport.__main__:main"
+wh-login = "whsport.cli.login_cli:main"
+wh-run = "whsport.cli.run_cli:main"
+wh-indoor = "whsport.cli.indoor_cli:main"
+wh-score = "whsport.cli.score_cli:main"
+wh-policy = "whsport.cli.policy_cli:main"
+wh-history = "whsport.cli.history_cli:main"
+wh-rank = "whsport.cli.rank_cli:main"
 
 [build-system]
 requires = ["uv_build>=0.12.7,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "whsport"
+module-root = "src"

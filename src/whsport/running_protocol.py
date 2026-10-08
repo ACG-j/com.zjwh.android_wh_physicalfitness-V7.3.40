@@ -8,7 +8,7 @@ import random
 import time
 import uuid
 from typing import Dict, List, Optional, Tuple, Union
-from coordinate_utils import Coordinate, coordinates_match, validate_coordinate
+from whsport.coordinate_utils import Coordinate, coordinates_match, validate_coordinate
 
 SPORT_STATIC_SALT = "2slhe02lsfiwowlcixisla_sls-_slaor"
 
