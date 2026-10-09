@@ -489,36 +489,70 @@ def _build_route(start_lat, start_lon, target_len_m, rng, n_dense=900):
     return path, cum
 
 
-def _speed_profile(n: int, base_speed: float, fitness: float,
-                   rng: random.Random) -> List[float]:
-    """Instantaneous speed (m/s): warm-up, fatigue, gait waves, terrain, noise.
+def _poisson(rng: random.Random, lam: float) -> int:
+    """Knuth Poisson sampler (lam is small here, so the loop is cheap)."""
+    if lam <= 0:
+        return 0
+    limit = math.exp(-lam)
+    k, p = 0, 1.0
+    while True:
+        k += 1
+        p *= rng.random()
+        if p <= limit:
+            return k - 1
 
-    The curve is deliberately *flat* (real device feedback: a jagged pace chart
-    is an obvious giveaway). Mean is normalised to base_speed.
+
+def _speed_profile(n: int, base_speed: float, duration_s: float,
+                   rng: random.Random) -> List[float]:
+    """Instantaneous speed (m/s) as a layered, human-like model.
+
+    ``base_speed * warm-up * fatigue * recovery * oscillation * AR(1) jitter``
+    plus occasional short slowdowns.  Unlike a hard low-pass filter, the AR(1)
+    term keeps real, auto-correlated jitter.  The mean is normalised to
+    ``base_speed`` so total distance and time are unchanged; only the shape
+    gains a gentle downward trend instead of being a flat line.
     """
+    t = [i / max(1, n - 1) for i in range(n)]
+    minutes = duration_s / 60.0
+
+    # 1) trend: wide warm-up + fatigue that scales with duration
+    fatigue = min(max(0.03 + 0.0035 * minutes, 0.04), 0.11)
+    power = rng.uniform(1.1, 1.5)
+    bumps = [(rng.uniform(0.25, 0.9), rng.uniform(0.04, 0.09), rng.uniform(0.015, 0.035))
+             for _ in range(rng.randint(1, 2))]
+
+    # 2) randomised oscillations (frequencies/phases change every run)
+    oscillations = [(rng.uniform(3.0, 40.0), rng.uniform(0.0, 2 * math.pi),
+                     rng.uniform(0.004, 0.010)) for _ in range(rng.randint(2, 4))]
+
+    # 3) AR(1) jitter, deliberately NOT smoothed away
+    rho = rng.uniform(0.50, 0.80)
+    sigma = rng.uniform(0.012, 0.020)
+    ar = [0.0] * n
+    for i in range(1, n):
+        ar[i] = ar[i - 1] * rho + sigma * math.sqrt(1 - rho * rho) * rng.gauss(0.0, 1.0)
+
+    lo, hi = 0.80 * base_speed, 1.20 * base_speed
     speeds = []
     for i in range(n):
-        t = i / max(1, n - 1)
-        warm = 0.92 + 0.08 * min(1.0, t / 0.03)
-        fade = (1.0 - (0.025 * (1.0 - fitness)) * ((t - 0.6) / 0.4)) if t > 0.6 else 1.0
-        wave = (1.0
-                + 0.020 * math.sin(2 * math.pi * t * 7.0)
-                + 0.013 * math.sin(2 * math.pi * t * 23.0 + 1.1)
-                + 0.006 * math.sin(2 * math.pi * t * 61.0))
-        terrain = 1.0 + 0.014 * math.sin(2 * math.pi * t * 1.8 + 0.4)
-        v = base_speed * warm * fade * wave * terrain * (1.0 + rng.gauss(0.0, 0.016))
-        if rng.random() < 1.0 / 130.0:
-            v *= rng.uniform(0.93, 0.96)
-        speeds.append(max(0.6, v))
-    w = max(2, n // 120)
-    smoothed = []
-    for i in range(n):
-        a, b = max(0, i - w), min(n, i + w + 1)
-        smoothed.append(sum(speeds[a:b]) / (b - a))
-    m = sum(smoothed) / len(smoothed)
+        ti = t[i]
+        warm = 1.0 - 0.05 * math.exp(-ti / 0.05)
+        fade = 1.0 - fatigue * (ti ** power)
+        recovery = 1.0 + sum(a * math.exp(-((ti - mu) / s) ** 2) for mu, s, a in bumps)
+        osc = 1.0 + sum(a * math.sin(2 * math.pi * f * ti + ph) for f, ph, a in oscillations)
+        v = base_speed * warm * fade * recovery * osc * (1.0 + ar[i])
+        speeds.append(min(hi, max(lo, v)))
+
+    # 4) occasional short slowdowns (crossing, phone, etc.)
+    for _ in range(_poisson(rng, minutes / 5.0)):
+        c = rng.randrange(n)
+        for j in range(c, min(n, c + rng.randint(1, 2))):
+            speeds[j] *= 1.0 - rng.uniform(0.04, 0.08)
+
+    m = sum(speeds) / n
     if m > 1e-9:
-        smoothed = [v * base_speed / m for v in smoothed]
-    return smoothed
+        speeds = [v * base_speed / m for v in speeds]
+    return speeds
 
 
 def _sample_deltas(n: int, total_s: float, rng: random.Random) -> List[float]:
@@ -877,44 +911,71 @@ def generate_synthetic_gps_track(start_lat: float, start_lon: float,
 
     n = max(2, int(total_time_sec) // 5)
     base_speed = total_distance_m / total_time_sec
-    fitness = rng.uniform(0.25, 0.85)
 
-    speeds = _speed_profile(n, base_speed, fitness, rng)
     deltas = _sample_deltas(n, float(total_time_sec), rng)
     if len(deltas) != n - 1:
         deltas = [float(total_time_sec) / (n - 1)] * (n - 1)
 
-    cum = [0.0]
-    for i in range(1, n):
-        cum.append(cum[-1] + 0.5 * (speeds[i - 1] + speeds[i]) * deltas[i - 1])
-    if cum[-1] > 0:
-        k = total_distance_m / cum[-1]
-        cum = [c * k for c in cum]
-    cum[-1] = float(total_distance_m)
+    def _cumulate(vs: List[float]) -> List[float]:
+        c = [0.0]
+        for i in range(1, n):
+            c.append(c[-1] + 0.5 * (vs[i - 1] + vs[i]) * deltas[i - 1])
+        if c[-1] > 0:
+            k = total_distance_m / c[-1]
+            c = [x * k for x in c]
+        c[-1] = float(total_distance_m)
+        return c
 
-    path, path_cum = (_build_loop_through_points(control_points)
-                      if control_points and len(control_points) >= 2
-                      else _build_route(start_lat, start_lon, float(total_distance_m), rng))
+    # 1) base speed: trend + oscillation + AR(1) jitter
+    speeds0 = _speed_profile(n, base_speed, float(total_time_sec), rng)
+    cum0 = _cumulate(speeds0)
 
+    # 2) elevation profile (a function of distance) and its slope
     e_base = rng.uniform(15.0, 130.0)
     a1, a2 = rng.uniform(2.0, 5.0), rng.uniform(0.5, 1.2)
     p1, p2 = rng.uniform(0.0, 2 * math.pi), rng.uniform(0.0, 2 * math.pi)
     w1, w2 = rng.uniform(1000.0, 2500.0), rng.uniform(350.0, 700.0)
 
+    def _elev(d: float) -> float:
+        return (e_base + a1 * math.sin(2 * math.pi * d / w1 + p1)
+                + a2 * math.sin(2 * math.pi * d / w2 + p2))
+
+    def _grade(d: float) -> float:
+        return (a1 * (2 * math.pi / w1) * math.cos(2 * math.pi * d / w1 + p1)
+                + a2 * (2 * math.pi / w2) * math.cos(2 * math.pi * d / w2 + p2))
+
+    # 3) terrain coupling: uphill slows, downhill only slightly speeds up
+    k_up, k_down = rng.uniform(1.2, 2.2), rng.uniform(0.6, 1.2)
+    speeds = []
+    for i in range(n):
+        g = _grade(cum0[i])
+        factor = (1.0 - k_up * g) if g > 0 else (1.0 - k_down * g)
+        speeds.append(speeds0[i] * min(1.06, max(0.90, factor)))
+    m = sum(speeds) / n
+    if m > 1e-9:
+        speeds = [v * base_speed / m for v in speeds]
+    cum = _cumulate(speeds)
+
+    path, path_cum = (_build_loop_through_points(control_points)
+                      if control_points and len(control_points) >= 2
+                      else _build_route(start_lat, start_lon, float(total_distance_m), rng))
+
     # Cadence follows speed weakly (v**0.16) plus a slow drift and per-window
     # counting noise, then is scaled so the integral equals the requested total
     # number of steps exactly.  The variation (not just the level) is what keeps
     # 10 s windows from collapsing to a two-value pattern on steady runs.
-    cad_prof = []
-    drift = 0.0
-    for i in range(n):
-        drift = drift * 0.97 + rng.gauss(0.0, 0.010)
-        ratio = (max(0.35, speeds[i]) / base_speed) ** 0.16
-        cad_prof.append(ratio * (1.0 + drift + rng.gauss(0.0, 0.025)))
+    alpha = rng.uniform(0.20, 0.35)
+    rho_c, sigma_c = rng.uniform(0.60, 0.85), rng.uniform(0.020, 0.035)
+    cad_ar = [0.0] * n
+    for i in range(1, n):
+        cad_ar[i] = (cad_ar[i - 1] * rho_c
+                     + sigma_c * math.sqrt(1 - rho_c * rho_c) * rng.gauss(0.0, 1.0))
+    cad_prof = [((max(0.35, speeds[i]) / base_speed) ** alpha) * (1.0 + cad_ar[i])
+                for i in range(n)]
     integral = sum(0.5 * (cad_prof[i - 1] + cad_prof[i]) / 60.0 * deltas[i - 1]
                    for i in range(1, n))
     cad_scale = (float(total_steps) / integral) if integral > 0 else 0.0
-    cadence = [min(200.0, max(128.0, c * cad_scale)) for c in cad_prof]
+    cadence = [min(300.0, max(40.0, c * cad_scale)) for c in cad_prof]
 
     steps_cum = [0.0]
     for i in range(1, n):
@@ -935,8 +996,7 @@ def generate_synthetic_gps_track(start_lat: float, start_lon: float,
         if i > 0:
             lat += rng.gauss(0.0, drift)
             lon += rng.gauss(0.0, drift / cos_lat)
-        ele = (e_base + a1 * math.sin(2 * math.pi * cum[i] / w1 + p1)
-               + a2 * math.sin(2 * math.pi * cum[i] / w2 + p2) + rng.gauss(0.0, 0.20))
+        ele = _elev(cum[i]) + rng.gauss(0.0, 0.20)
         cad = cadence[i]
         stride = (speeds[i] / (cad / 60.0) * 100.0) if cad > 0 else 0.0
         stride = max(height_cm * 0.42, min(height_cm * 1.15, stride))
