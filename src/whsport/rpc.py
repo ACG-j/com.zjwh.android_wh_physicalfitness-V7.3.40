@@ -203,7 +203,10 @@ class Engine:
 
     def cmd_run_preview(self, params: dict) -> dict:
         points, _start, _dur, metrics, _args = self._generate(params)
+        paces = [round(1000.0 / (p.speed * 60.0), 3) for p in points if p.speed > 0]
+        step = max(1, len(paces) // 64)          # 下采样，前端曲线更顺
         return {"metrics": metrics,
+                "pace": paces[::step],
                 "track": [[round(p.lat, 6), round(p.lon, 6)] for p in points]}
 
     def cmd_run_submit(self, params: dict) -> dict:
