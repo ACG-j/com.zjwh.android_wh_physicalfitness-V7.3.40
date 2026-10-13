@@ -33,9 +33,12 @@ from whsport.credentials import (
     load_campus,
     load_credentials,
     resolve,
-    save_campus,
     save_credentials,
 )
+
+# 种子坐标：服务端按账号 unid 选择打卡点（实测中性坐标也能返回本校点位），
+# 这个值只是占位；本地配置里若有 campus 则优先。
+NEUTRAL_SEED = (39.9042, 116.4074)
 
 
 def _log(msg: str) -> None:
@@ -49,6 +52,7 @@ class Engine:
         self._client = None
         self._client_key: tuple[str, str] | None = None
         self._checkin_cache: tuple[float, list] | None = None
+        self._user_cache: dict | None = None
 
     # -- 凭据 ---------------------------------------------------------------
     def _client_for(self, token: str, uid: str, unid: int):
@@ -97,6 +101,12 @@ class Engine:
         self._client = None
         self._client_key = None
         return {"ok": True}
+
+    def cmd_user_info(self, params: dict) -> dict:
+        info = self._user_info()
+        return {"unid": info.get("unid"), "campus": info.get("campusName"),
+                "name": info.get("name"), "weight": info.get("weight"),
+                "height": info.get("height")}
 
     def cmd_policy(self, params: dict) -> dict:
         client = self._current_client()
@@ -148,6 +158,17 @@ class Engine:
             self._checkin_cache = (now, usable)
         return usable
 
+    def _user_info(self) -> dict:
+        """账号资料（unid / 校区名 / 体重 / 身高），进程内缓存。"""
+        if self._user_cache is not None:
+            return self._user_cache
+        try:
+            data = self._current_client().get_user_info().get("data") or {}
+            self._user_cache = data if isinstance(data, dict) else {}
+        except Exception:  # noqa: BLE001 - 拿不到就用兜底值
+            self._user_cache = {}
+        return self._user_cache
+
     def _generate(self, params: dict):
         from whsport.running_protocol import (
             FivePoint,
@@ -157,7 +178,10 @@ class Engine:
             order_points_loop,
         )
         sport_type = int(params.get("sport_type", 1))
-        weight = float(params.get("weight", 62))
+        info = self._user_info()
+        # 体重/身高优先参数，其次账号资料（/api/v70300/user/info），最后兜底
+        weight = float(params.get("weight") or info.get("weight") or 62.0)
+        height = float(info.get("height") or 172.0)
         jr = random.Random()
 
         # 距离：真实记录本就不整齐，开启抖动时小幅上浮
@@ -175,15 +199,10 @@ class Engine:
             cadence = jr.uniform(78.0, 84.0)                  # 步/分
             steps = int(round(cadence * duration / 60.0))
 
-        # 校园种子坐标（拉打卡点用，**不是起点**）：参数 > 本地记忆
+        # 种子坐标：服务端按账号 unid 选打卡点，这里只是占位
         lat_v, lon_v = params.get("lat"), params.get("lon")
         if lat_v is None or lon_v is None:
-            campus = load_campus()
-            if campus is None:
-                raise RuntimeError(
-                    "尚未记录校园坐标：请先运行一次 "
-                    "`wh-run --type 1 --latitude <纬度> --longitude <经度> --dry-run`")
-            lat_v, lon_v = campus
+            lat_v, lon_v = load_campus() or NEUTRAL_SEED
         lat, lon = validate_coordinate(lat_v, lon_v)
 
         stop = int(time.time() * 1000)
@@ -205,11 +224,11 @@ class Engine:
                                   radius=float(c.get("radius") or 15.0),
                                   start_ms=start)
                         for i, c in enumerate(usable)]
-                save_campus(lat, lon)
 
         points, default_five = generate_synthetic_gps_track(
             lat, lon, int(round(distance)), duration, start,
-            total_steps=steps, control_points=control, start_hint=start_hint)
+            total_steps=steps, height_cm=height,
+            control_points=control, start_hint=start_hint)
         if five is None:
             five = default_five
         _, record, _ = OutdoorRunRecordBuilder(
@@ -254,6 +273,7 @@ COMMANDS: dict[str, str] = {
     "credentials": "cmd_credentials",
     "login": "cmd_login",
     "logout": "cmd_logout",
+    "user.info": "cmd_user_info",
     "policy": "cmd_policy",
     "score": "cmd_score",
     "history": "cmd_history",

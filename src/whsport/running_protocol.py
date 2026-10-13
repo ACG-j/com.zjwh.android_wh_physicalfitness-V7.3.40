@@ -178,7 +178,7 @@ def compute_sport_signature(field_map: dict[str, str | int | float | bool | None
     valid_items.sort(key=lambda x: (x[0].lower(), x[0]))
     canonical_str = "&".join(f"{k}={v}" for k, v in valid_items)
     to_hash = (canonical_str + salt).encode("utf-8")
-    return hashlib.new("md5", to_hash).hexdigest().lower()  # nosemgrep: python.lang.security.insecure-hash-function
+    return hashlib.new("md5", to_hash).hexdigest().lower()  # noqa: S324  # nosemgrep: python.lang.security.insecure-hash-function
 
 
 def compute_original_sign(field_map: dict[str, str | int | float | bool | None]) -> str:
@@ -687,7 +687,7 @@ def _ten_sec_windows(points: list[GpsPoint], start_ms: int, total_time: int,
     # Realistic pedometer counting noise, deterministic per (start_ms, window) so
     # the record body and the OBS object stay identical.
     for k in range(len(raw_steps)):
-        hv = int.from_bytes(hashlib.new("md5", f"{start_ms}:{k}".encode()).digest()[:3], "big")  # nosemgrep: python.lang.security.insecure-hash-function
+        hv = int.from_bytes(hashlib.new("md5", f"{start_ms}:{k}".encode()).digest()[:3], "big")  # noqa: S324  # nosemgrep: python.lang.security.insecure-hash-function
         raw_steps[k] = max(0.0, raw_steps[k] + (hv / 0xFFFFFF - 0.5) * 2.6)
 
     if total_steps is not None and raw_steps and sum(raw_steps) > 0:

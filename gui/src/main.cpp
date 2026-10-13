@@ -30,6 +30,7 @@ struct State {
     bool busy = false;
     std::string status = "就绪";
     std::string cred = "读取中...";
+    std::string campus;
     std::string metrics;
     std::vector<float> pace;
     std::string routeSvg;
@@ -83,6 +84,19 @@ void applyCredentials() {
                     (data.value("has_token", false) ? " · 已登录" : " · 未登录");
     } catch (const std::exception&) {
         st().cred = "引擎未就绪";
+    }
+    // 账号资料：校区名 + 体重/身高（体重用于卡路里/功率，预填到输入框）
+    try {
+        auto info = st().engine.request("user.info");
+        st().campus = info.value("campus", std::string(""));
+        const double w = info.value("weight", 0.0);
+        if (w > 0.0) {
+            char buf[16];
+            std::snprintf(buf, sizeof(buf), "%.0f", w);
+            st().weight = buf;
+        }
+    } catch (const std::exception&) {
+        // 拿不到账号资料就用默认体重
     }
 }
 
@@ -271,7 +285,8 @@ void compose(eui::Ui& ui, const eui::Screen& screen) {
                 ui.column("brand").gap(4.0f).content([&] {
                     ui.text("title").text("运动世界校园").fontSize(24.0f).build();
                     ui.text("subtitle")
-                        .text(s.cred + "   ·   先预览，确认后再提交")
+                        .text(s.cred + (s.campus.empty() ? "" : "   ·   " + s.campus) +
+                              "   ·   先预览，确认后再提交")
                         .fontSize(12.5f).opacity(0.6f).build();
                 }).build();
             }).build();
@@ -301,11 +316,11 @@ void compose(eui::Ui& ui, const eui::Screen& screen) {
                     ui.row("params").gap(12.0f).content([&] {
                         field(ui, "dist", "距离(米)", s.dist, 200.0f,
                               [](const std::string& v) { st().dist = v; });
-                        field(ui, "weight", "体重(kg)", s.weight, 200.0f,
+                        field(ui, "weight", "体重(kg，默认取账号)", s.weight, 240.0f,
                               [](const std::string& v) { st().weight = v; });
                     }).build();
                     ui.text("run_hint")
-                        .text("用时与步数由引擎按配速/步频自动推算；校园坐标已记忆，"
+                        .text("用时/步数按配速·步频自动推算；打卡点按账号学校下发，"
                               "起点自动生成在第一个打卡点旁边。")
                         .fontSize(12.5f).opacity(0.55f).build();
                     ui.row("run_actions").gap(12.0f).content([&] {

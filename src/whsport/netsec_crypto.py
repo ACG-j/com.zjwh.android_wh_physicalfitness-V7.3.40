@@ -46,7 +46,7 @@ def compute_token_sign(params: Mapping[str, Any],
     valid_items.sort(key=lambda x: (x[0].lower(), x[0]))
     canonical_str = "&".join(f"{k}={v}" for k, v in valid_items)
     to_hash = (canonical_str + salt).encode("utf-8")
-    return hashlib.new("md5", to_hash).hexdigest().lower()  # nosemgrep: python.lang.security.insecure-hash-function
+    return hashlib.new("md5", to_hash).hexdigest().lower()  # noqa: S324  # nosemgrep: python.lang.security.insecure-hash-function
 
 
 def _byte_hash(data: bytes) -> int:
@@ -171,7 +171,7 @@ class NetSecCrypto:
         ])
         inner_json = json.dumps(inner_dict, separators=(",", ":"), ensure_ascii=False) + chr(10)
         inner_bytes = inner_json.encode("utf-8")
-        h = hashlib.new("md5", inner_bytes).hexdigest().lower()  # nosemgrep: python.lang.security.insecure-hash-function
+        h = hashlib.new("md5", inner_bytes).hexdigest().lower()  # noqa: S324  # nosemgrep: python.lang.security.insecure-hash-function
         printable_pool = [chr(i) for i in range(0x21, 0x7E)]
         req_aes_key = "".join(random.choice(printable_pool) for _ in range(16)).encode("ascii")
         zero_iv = bytes(16)
@@ -218,7 +218,7 @@ class NetSecCrypto:
         req_key = "".join(random.choice(printable_pool) for _ in range(16)).encode("ascii")
         aes_cipher = AES.new(req_key, AES.MODE_CBC, iv=bytes(16))
         d = base64.b64encode(aes_cipher.encrypt(pad(container, 16))).decode("ascii")
-        h = hashlib.new("md5", container).hexdigest().lower()  # nosemgrep: python.lang.security.insecure-hash-function
+        h = hashlib.new("md5", container).hexdigest().lower()  # noqa: S324  # nosemgrep: python.lang.security.insecure-hash-function
         k = base64.b64encode(self.request_rsa_cipher.encrypt(req_key)).decode("ascii")
         return f'{{"k":"{k}","p":101,"d":"{d}","h":"{h}","t":0}}'
 
@@ -247,7 +247,7 @@ class NetSecCrypto:
         except ValueError:
             inner_plain_bytes = padded_plain
         if verify_sig:
-            digest_hex = hashlib.new("md5", inner_plain_bytes).hexdigest().lower().encode("ascii")  # nosemgrep: python.lang.security.insecure-hash-function
+            digest_hex = hashlib.new("md5", inner_plain_bytes).hexdigest().lower().encode("ascii")  # noqa: S324  # nosemgrep: python.lang.security.insecure-hash-function
             sig_bytes = base64.b64decode(s_b64)
             block_size = (self.response_rsa_key.n.bit_length() + 7) // 8
             if len(sig_bytes) != block_size:

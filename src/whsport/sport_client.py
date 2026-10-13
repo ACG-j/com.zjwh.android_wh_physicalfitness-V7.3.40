@@ -501,6 +501,11 @@ class SportClient:
         }
         return self.execute_request("POST", url, body)
 
+    def get_user_info(self) -> dict:
+        """账号资料：unid / campusName / weight / height（校园坐标由 unid 决定，不在这里）。"""
+        url = f"{DEFAULT_HOST_RUN}/api/v70300/user/info"
+        return self.execute_request("POST", url, {})
+
     def get_geo_fence(self, update_time: int = 0) -> dict:
         url = f"{DEFAULT_HOST_RUN}/api/v1/getGeoFenceForRun"
         return self.execute_request("POST", url, {"geoFenceUpdateTime": update_time})
@@ -611,7 +616,7 @@ class SportClient:
         """Fetch the server-issued check-in points around (lat, lon)."""
         url = f"{DEFAULT_HOST_RUN}/api/v560/get/1/distance/1"
         http_url = url.replace("https://", "http://", 1)
-        sign = hashlib.new("md5", (http_url + SPORT_STATIC_SALT).encode("utf-8")).hexdigest().lower()  # nosemgrep: python.lang.security.insecure-hash-function
+        sign = hashlib.new("md5", (http_url + SPORT_STATIC_SALT).encode("utf-8")).hexdigest().lower()  # noqa: S324  # nosemgrep: python.lang.security.insecure-hash-function
         ts = int(time.time() * 1000)
         runec_input = f"{int(self.uid or 0)}{lon:.6f}{lat:.6f}{(ts // 1000) * 1000}"
         runec = self.crypto.encrypt_observed(runec_input, self.session, ts)
