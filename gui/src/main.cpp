@@ -26,13 +26,7 @@ struct State {
     std::string user;
     std::string pass;
     std::string dist = "2000";
-    std::string time = "830";
-    std::string steps = "1100";
     std::string weight = "62";
-    std::string lat = "39.9042";
-    std::string lon = "116.4074";
-    bool jitter = true;
-    bool policy = true;
     bool busy = false;
     std::string status = "就绪";
     std::string cred = "读取中...";
@@ -103,12 +97,11 @@ double num(const std::string& text, double fallback) {
 }
 
 nlohmann::json runParams() {
+    // 用时/步数/校园坐标/策略都由引擎在后台决定，这里只传距离和体重。
     State& s = st();
     return {
-        {"distance", num(s.dist, 2000)}, {"duration", (int)num(s.time, 830)},
-        {"steps", (int)num(s.steps, 1100)}, {"weight", num(s.weight, 62)},
-        {"lat", num(s.lat, 39.9042)}, {"lon", num(s.lon, 116.4074)},
-        {"jitter", s.jitter}, {"policy", s.policy},
+        {"distance", num(s.dist, 2000)},
+        {"weight", num(s.weight, 62)},
     };
 }
 
@@ -306,29 +299,15 @@ void compose(eui::Ui& ui, const eui::Screen& screen) {
             } else if (s.tab == 1) {
                 ui.column("run_form").gap(14.0f).content([&] {
                     ui.row("params").gap(12.0f).content([&] {
-                        field(ui, "dist", "距离(米)", s.dist, 150.0f,
+                        field(ui, "dist", "距离(米)", s.dist, 200.0f,
                               [](const std::string& v) { st().dist = v; });
-                        field(ui, "time", "用时(秒)", s.time, 150.0f,
-                              [](const std::string& v) { st().time = v; });
-                        field(ui, "steps", "步数", s.steps, 150.0f,
-                              [](const std::string& v) { st().steps = v; });
-                        field(ui, "weight", "体重(kg)", s.weight, 150.0f,
+                        field(ui, "weight", "体重(kg)", s.weight, 200.0f,
                               [](const std::string& v) { st().weight = v; });
                     }).build();
-                    ui.row("geo").gap(12.0f).content([&] {
-                        field(ui, "lat", "纬度", s.lat, 220.0f,
-                              [](const std::string& v) { st().lat = v; });
-                        field(ui, "lon", "经度", s.lon, 220.0f,
-                              [](const std::string& v) { st().lon = v; });
-                    }).build();
-                    ui.row("opts").gap(28.0f).content([&] {
-                        components::checkbox(ui, "jitter").text("小幅随机")
-                            .checked(s.jitter)
-                            .onChange([](bool v) { st().jitter = v; }).build();
-                        components::checkbox(ui, "policy").text("policy=1")
-                            .checked(s.policy)
-                            .onChange([](bool v) { st().policy = v; }).build();
-                    }).build();
+                    ui.text("run_hint")
+                        .text("用时与步数由引擎按配速/步频自动推算；校园坐标已记忆，"
+                              "起点自动生成在第一个打卡点旁边。")
+                        .fontSize(12.5f).opacity(0.55f).build();
                     ui.row("run_actions").gap(12.0f).content([&] {
                         components::button(ui, "preview").text("① 预览（本地 dry-run）")
                             .disabled(s.busy).onClick(doPreview).build();

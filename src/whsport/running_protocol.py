@@ -861,14 +861,16 @@ def order_points_loop(points_ll: list[tuple[float, float]]) -> list[tuple[float,
     return sorted(points_ll, key=_ang)
 
 
-def _build_loop_through_points(control_ll, n_per_seg: int = 60):
+def _build_loop_through_points(control_ll, n_per_seg: int = 60, start_hint=None):
     """Closed polygon through the control points with rounded corners.
 
     control_ll: list of (lat, lon) in WGS-84, in visit order.  Straight edges
     plus a small quadratic fillet at each vertex mimic running along campus
     roads (long straights + turns) far better than a Catmull-Rom spline, whose
-    near-constant curvature is itself a fingerprint.  The ring is rotated so it
-    starts at the point farthest from any control point.
+    near-constant curvature is itself a fingerprint.
+
+    start_hint: 若给定，起点取在它旁边（沿路径前进约 25 m），用于「起点贴在第一个
+    打卡点旁边」；否则回退为「离所有控制点最远的点」。
     """
     n = len(control_ll)
     lat0 = sum(p[0] for p in control_ll) / n
@@ -911,12 +913,28 @@ def _build_loop_through_points(control_ll, n_per_seg: int = 60):
                           mt * mt * p0[1] + 2 * mt * t * v[1] + t * t * p2[1]))
     body = [(lat0 + y / m_lat, lon0 + x / m_lon) for x, y in dense]
 
-    # Rotate the ring so it starts at the point farthest from every control point.
-    best_i, best_d = 0, -1.0
-    for i, (la, lo) in enumerate(body):
-        d = min(_haversine_m(la, lo, cl[0], cl[1]) for cl in control_ll)
-        if d > best_d:
-            best_d, best_i = d, i
+    if start_hint is not None:
+        # 起点贴在第一个打卡点旁边：找最近的点，再沿路径前进 ~25 m
+        seg = [0.0]
+        for i in range(1, len(body)):
+            seg.append(seg[-1] + _haversine_m(body[i - 1][0], body[i - 1][1],
+                                              body[i][0], body[i][1]))
+        total = seg[-1] or 1.0
+        nearest = min(range(len(body)),
+                      key=lambda i: _haversine_m(body[i][0], body[i][1],
+                                                 start_hint[0], start_hint[1]))
+        target = (seg[nearest] + 25.0) % total
+        best_i, k = 0, 0
+        while k + 1 < len(body) and seg[k + 1] < target:
+            k += 1
+        best_i = k
+    else:
+        # 否则：起点取离所有控制点最远的点（避免压在标记上）
+        best_i, best_d = 0, -1.0
+        for i, (la, lo) in enumerate(body):
+            d = min(_haversine_m(la, lo, cl[0], cl[1]) for cl in control_ll)
+            if d > best_d:
+                best_d, best_i = d, i
     if best_i:
         body = body[best_i:] + body[:best_i]
 
@@ -941,6 +959,7 @@ def generate_synthetic_gps_track(start_lat: float, start_lon: float,
                                  weight_kg: float = DEFAULT_BODY_WEIGHT_KG,
                                  height_cm: float = DEFAULT_HEIGHT_CM,
                                  control_points: list[tuple[float, float]] | None = None,
+                                 start_hint: tuple[float, float] | None = None,
                                  rng: random.Random | None = None
                                  ) -> tuple[list[GpsPoint], list[FivePoint]]:
     start_lat, start_lon = validate_coordinate(start_lat, start_lon)
@@ -1000,7 +1019,7 @@ def generate_synthetic_gps_track(start_lat: float, start_lon: float,
         speeds = [v * base_speed / m for v in speeds]
     cum = _cumulate(speeds)
 
-    path, path_cum = (_build_loop_through_points(control_points)
+    path, path_cum = (_build_loop_through_points(control_points, start_hint=start_hint)
                       if control_points and len(control_points) >= 2
                       else _build_route(start_lat, start_lon, float(total_distance_m), rng))
 

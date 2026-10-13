@@ -63,3 +63,37 @@ def resolve(token=None, uid=None, unid=None):
     if unid in (None, "", 0, "0"):
         unid = data.get("unid") or unid or ""
     return token, uid, unid
+
+
+def load_campus():
+    """Return the stored campus seed (lat, lon), or None.
+
+    用作拉取打卡点的「种子坐标」——不是起点，起点由路线自动生成。
+    """
+    data = load_credentials()
+    lat, lon = data.get("campus_lat"), data.get("campus_lon")
+    if lat in (None, "") or lon in (None, ""):
+        return None
+    try:
+        return float(lat), float(lon)
+    except (TypeError, ValueError):
+        return None
+
+
+def save_campus(lat, lon) -> str:
+    """Persist the campus seed so later runs need no coordinates."""
+    if lat in (None, "") or lon in (None, ""):
+        return ""
+    data = load_credentials()
+    data["campus_lat"] = round(float(lat), 6)
+    data["campus_lon"] = round(float(lon), 6)
+    tmp_path = CRED_PATH + ".tmp"
+    try:
+        os.makedirs(CONFIG_DIR, mode=0o700, exist_ok=True)
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2)
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, CRED_PATH)
+    except OSError:
+        return ""
+    return CRED_PATH

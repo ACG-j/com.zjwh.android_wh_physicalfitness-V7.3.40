@@ -29,21 +29,17 @@ from collections.abc import Callable
 from typing import Any
 
 from whsport.coordinate_utils import validate_coordinate
-from whsport.credentials import load_credentials, resolve, save_credentials
+from whsport.credentials import (
+    load_campus,
+    load_credentials,
+    resolve,
+    save_campus,
+    save_credentials,
+)
 
 
 def _log(msg: str) -> None:
     print(f"[engine] {msg}", file=sys.stderr, flush=True)
-
-
-def _apply_jitter(distance: float, duration: int, steps: int, enabled: bool):
-    if not enabled:
-        return distance, duration, steps
-    jr = random.Random()
-    distance = float(int(round(distance * jr.uniform(1.005, 1.095))))
-    duration = int(round(duration * jr.uniform(0.96, 1.07)))
-    steps = int(round(steps * jr.uniform(0.96, 1.07)))
-    return distance, duration, steps
 
 
 class Engine:
@@ -52,6 +48,7 @@ class Engine:
     def __init__(self) -> None:
         self._client = None
         self._client_key: tuple[str, str] | None = None
+        self._checkin_cache: tuple[float, list] | None = None
 
     # -- 凭据 ---------------------------------------------------------------
     def _client_for(self, token: str, uid: str, unid: int):
@@ -138,37 +135,68 @@ class Engine:
         return {"data": data}
 
     # -- 跑步 ---------------------------------------------------------------
+    def _checkins(self, lat: float, lon: float) -> list:
+        """拉取打卡点（只读），带 2 分钟缓存避免撞服务端限流。"""
+        now = time.time()
+        if self._checkin_cache and now - self._checkin_cache[0] < 120.0:
+            return self._checkin_cache[1]
+        client = self._current_client()
+        cps = client._checkin_points(lat, lon)  # noqa: SLF001 - 内部只读接口
+        usable = [c for c in cps
+                  if c.get("glat") is not None and c.get("glon") is not None]
+        if usable:
+            self._checkin_cache = (now, usable)
+        return usable
+
     def _generate(self, params: dict):
         from whsport.running_protocol import (
+            FivePoint,
             OutdoorRunRecordBuilder,
+            gcj02_to_wgs84,
             generate_synthetic_gps_track,
+            order_points_loop,
         )
-        distance = float(params.get("distance", 2000))
-        duration = int(params.get("duration", 830))
-        steps = int(params.get("steps", 1100))
-        weight = float(params.get("weight", 62))
         sport_type = int(params.get("sport_type", 1))
-        distance, duration, steps = _apply_jitter(
-            distance, duration, steps, bool(params.get("jitter", True)))
-        lat, lon = validate_coordinate(float(params.get("lat", 39.9042)),
-                                       float(params.get("lon", 116.4074)))
+        weight = float(params.get("weight", 62))
+        jr = random.Random()
+
+        # 距离：真实记录本就不整齐，开启抖动时小幅上浮
+        distance = float(params.get("distance") or 2000)
+        if params.get("jitter", True):
+            distance = float(int(round(distance * jr.uniform(1.005, 1.095))))
+
+        # 用时 / 步数：界面上不再暴露，后台按配速/步频自动推算
+        duration = int(params.get("duration") or 0)
+        if duration <= 0:
+            pace = jr.uniform(6.4, 7.0)                       # 分/公里
+            duration = int(round(pace * (distance / 1000.0) * 60))
+        steps = int(params.get("steps") or 0)
+        if steps <= 0:
+            cadence = jr.uniform(78.0, 84.0)                  # 步/分
+            steps = int(round(cadence * duration / 60.0))
+
+        # 校园种子坐标（拉打卡点用，**不是起点**）：参数 > 本地记忆
+        lat_v, lon_v = params.get("lat"), params.get("lon")
+        if lat_v is None or lon_v is None:
+            campus = load_campus()
+            if campus is None:
+                raise RuntimeError(
+                    "尚未记录校园坐标：请先运行一次 "
+                    "`wh-run --type 1 --latitude <纬度> --longitude <经度> --dry-run`")
+            lat_v, lon_v = campus
+        lat, lon = validate_coordinate(lat_v, lon_v)
+
         stop = int(time.time() * 1000)
         start = stop - duration * 1000
 
-        control, five = None, None
-        if sport_type == 1 and params.get("with_checkins"):
-            client = self._current_client()
-            cps = client._checkin_points(lat, lon)  # noqa: SLF001 - 内部只读接口
-            usable = [c for c in cps
-                      if c.get("glat") is not None and c.get("glon") is not None]
-            from whsport.running_protocol import (
-                FivePoint,
-                gcj02_to_wgs84,
-                order_points_loop,
-            )
+        # 计分跑：串打卡点；起点落在第一个打卡点旁边
+        control, five, start_hint = None, None, None
+        if sport_type == 1:
+            usable = self._checkins(lat, lon)
             if usable:
-                control = order_points_loop(
-                    [gcj02_to_wgs84(float(c["glat"]), float(c["glon"])) for c in usable])
+                wgs = [gcj02_to_wgs84(float(c["glat"]), float(c["glon"])) for c in usable]
+                control = order_points_loop(wgs)
+                start_hint = wgs[0]
                 five = [FivePoint(lat=float(c["lat"]), lon=float(c["lon"]),
                                   is_fixed=int(c.get("isFixed") or 0),
                                   point_name=str(c.get("pointName") or ""),
@@ -177,10 +205,11 @@ class Engine:
                                   radius=float(c.get("radius") or 15.0),
                                   start_ms=start)
                         for i, c in enumerate(usable)]
+                save_campus(lat, lon)
 
         points, default_five = generate_synthetic_gps_track(
             lat, lon, int(round(distance)), duration, start,
-            total_steps=steps, control_points=control)
+            total_steps=steps, control_points=control, start_hint=start_hint)
         if five is None:
             five = default_five
         _, record, _ = OutdoorRunRecordBuilder(

@@ -668,6 +668,7 @@ class SportClient:
 
         control_points = None
         five_points = None
+        start_hint = None
         if sport_type == 1:
             checkins = self._checkin_points(start_lat, start_lon)
             usable = [c for c in checkins
@@ -678,9 +679,9 @@ class SportClient:
                     "message": "未能获取打卡点（限流 10603 或接口异常），本次不提交",
                 }
             if usable:
-                control_points = order_points_loop([
-                    gcj02_to_wgs84(float(c["glat"]), float(c["glon"])) for c in usable
-                ])
+                wgs = [gcj02_to_wgs84(float(c["glat"]), float(c["glon"])) for c in usable]
+                control_points = order_points_loop(wgs)
+                start_hint = wgs[0]        # 起点落在第一个打卡点旁边
                 five_points = [
                     FivePoint(
                         lat=float(c["lat"] if c.get("lat") is not None else c["glat"]),
@@ -703,6 +704,7 @@ class SportClient:
             start_time_ms=start_time_ms,
             total_steps=total_steps,
             control_points=control_points,
+            start_hint=start_hint,
         )
         if five_points is None:
             five_points = default_five
